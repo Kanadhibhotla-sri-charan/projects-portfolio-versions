@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html class="demo-fixed" lang="en">
+<head><link rel="stylesheet" href="demo-bar.css"><script src="demo-data.js"></script><script src="demo-shim.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Food Tracker</title>
+<meta name="theme-color" content="#6d4aff">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body><div id="demo-bar" class="fixed"><span class="lg">Food Tracker · read-only demo with sample data</span><span class="sm">Demo · sample data</span><a href="../../index.html"><span class="lg">← Back to portfolio</span><span class="sm">← Portfolio</span></a></div>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">FT</span>
+    <h1>Food Tracker</h1>
+  </div>
+  <input type="date" id="date-input" aria-label="Date">
+</header>
+
+<nav class="tabs" id="tabs" aria-label="Sections">
+  <button class="tab-btn active" data-tab="today" aria-current="page"><span class="tab-icon" aria-hidden="true">🔥</span><span class="tab-label">Today</span></button>
+  <button class="tab-btn" data-tab="add-food"><span class="tab-icon" aria-hidden="true">➕</span><span class="tab-label">Add Food</span></button>
+  <button class="tab-btn" data-tab="recommend"><span class="tab-icon" aria-hidden="true">✨</span><span class="tab-label">What to Eat</span></button>
+  <button class="tab-btn" data-tab="catalogue"><span class="tab-icon" aria-hidden="true">🥗</span><span class="tab-label">Foods</span></button>
+  <button class="tab-btn" data-tab="plans"><span class="tab-icon" aria-hidden="true">🗓️</span><span class="tab-label">Plans</span></button>
+</nav>
+
+<main>
+
+<section id="tab-today" class="tab-panel active" aria-labelledby="today-heading">
+  <h2 id="today-heading" class="visually-hidden">Today</h2>
+  <div id="today-content" class="card-list">
+    <div class="loading-line"><span class="spinner" aria-hidden="true"></span> Loading today…</div>
+  </div>
+  <div id="meal-timeline-content"></div>
+  <div id="food-entries-content"></div>
+  <div id="plan-status-content"></div>
+</section>
+
+<section id="tab-add-food" class="tab-panel">
+  <div class="card hero-input">
+    <label for="food-text">What did you eat?</label>
+    <textarea id="food-text" placeholder="e.g. 1/4 cup Pintola oats with 1/4 cup milk, one 50ml cup of coffee"></textarea>
+
+    <label id="meal-label">Meal</label>
+    <div class="chip-row" id="meal-chips" role="group" aria-labelledby="meal-label">
+      <button type="button" class="chip" data-meal="pw">🏃 Pre-workout</button>
+      <button type="button" class="chip" data-meal="bf">🌅 Breakfast</button>
+      <button type="button" class="chip" data-meal="lunch">🍛 Lunch</button>
+      <button type="button" class="chip" data-meal="snack">🍌 Snack</button>
+      <button type="button" class="chip" data-meal="dinner">🌙 Dinner</button>
+    </div>
+
+    <button id="interpret-btn" class="primary">Understand meal</button>
+    <div id="interpret-loading" class="loading-line" style="display:none">
+      <span class="spinner" aria-hidden="true"></span> <span id="interpret-loading-text">Understanding your meal…</span>
+    </div>
+    <p id="interpret-error" class="error" role="alert"></p>
+    <button type="button" id="quick-entry-toggle" class="secondary" style="width:100%;margin-top:12px">+ Quick Entry</button>
+  </div>
+
+  <div id="quick-entry-panel" class="card" style="display:none">
+    <label class="checkbox-row weigh-toggle"><input type="checkbox" id="qe-weighed-check"> ⚖️ Weighed on scale (grams)</label>
+    <label for="qe-description" id="qe-description-label">Food / Dish</label>
+    <input type="text" id="qe-description" placeholder="e.g. Masala dosa hotel made with heavy oil">
+    <p class="note" style="margin-top:4px">Type anything — it doesn't need to match a known food.</p>
+    <div id="qe-suggestions" class="qe-food-list"></div>
+
+    <div id="qe-standard-fields">
+    <label id="qe-qty-label">Quantity</label>
+    <div class="chip-row" id="qe-qty-chips" role="group" aria-labelledby="qe-qty-label"></div>
+    <div class="chip-row">
+      <button type="button" class="chip" id="qe-qty-custom-toggle">Custom</button>
+      <input type="text" inputmode="decimal" id="qe-qty-custom-input" placeholder="e.g. 0.6 or 3/5" style="display:none;max-width:130px">
+    </div>
+
+    <label id="qe-unit-label">Scale</label>
+    <div class="chip-row" id="qe-unit-chips" role="group" aria-labelledby="qe-unit-label"></div>
+    </div>
+
+    <div id="qe-weighed-fields" style="display:none">
+      <div class="chip-row" id="qe-weigh-mode-chips" role="group" aria-label="Single item or mixed dish">
+        <button type="button" class="chip selected" data-mode="single">Single item</button>
+        <button type="button" class="chip" data-mode="mixed">Mixed dish</button>
+      </div>
+      <label for="qe-grams" id="qe-grams-label">Weight (g)</label>
+      <input type="number" id="qe-grams" min="0" step="any" inputmode="decimal" placeholder="e.g. 100">
+
+      <label for="qe-count" id="qe-count-label">How many</label>
+      <div class="stepper">
+        <button type="button" class="stepper-btn" id="qe-count-minus" aria-label="One less">−</button>
+        <input type="number" id="qe-count" value="1" min="0" step="any" inputmode="decimal" aria-describedby="qe-count-total">
+        <button type="button" class="stepper-btn" id="qe-count-plus" aria-label="One more">+</button>
+        <span id="qe-count-total" class="stepper-total"></span>
+      </div>
+
+      <div id="qe-mixed-fields" style="display:none">
+        <label id="qe-parts-label">What's in it — % of the weight</label>
+        <div id="qe-parts" role="group" aria-labelledby="qe-parts-label"></div>
+        <button type="button" id="qe-add-part-btn" class="secondary" style="margin-top:8px">+ Add part</button>
+        <p id="qe-parts-total" class="note"></p>
+      </div>
+
+      <label for="qe-weigh-note">Notes (optional)</label>
+      <input type="text" id="qe-weigh-note" placeholder="e.g. sambar has aloo, onion, carrot, lady's finger pieces">
+    </div>
+
+    <button type="button" id="qe-add-btn" class="primary" style="margin-top:12px">Add Food</button>
+    <p id="qe-error" class="error" role="alert"></p>
+  </div>
+
+  <div id="parsed-items"></div>
+
+  <div id="log-actions" class="card" style="display:none">
+    <div class="confirm-bar">
+      <div class="confirm-summary">
+        <div class="confirm-title" id="confirm-title">Ready to log</div>
+        <div class="confirm-sub" id="confirm-sub"></div>
+      </div>
+    </div>
+    <button id="log-btn" class="primary">Confirm &amp; Log</button>
+    <p id="log-error" class="error" role="alert"></p>
+  </div>
+  <div id="log-result"></div>
+</section>
+
+<section id="tab-recommend" class="tab-panel">
+  <div class="card" id="available-now-card">
+    <label id="available-now-label">Available Now</label>
+    <p class="note" style="margin-top:0">Foods you can use right now without buying anything — not a full inventory, just a quick checklist.</p>
+    <div class="pill-list" id="available-now-current"></div>
+    <input type="search" id="available-now-search" placeholder="Search to add or remove…">
+    <div class="chip-row" id="available-now-candidates" role="group" aria-labelledby="available-now-label"></div>
+  </div>
+  <div class="card">
+    <label id="goal-label">Focus</label>
+    <div class="chip-row" id="goal-chips" role="group" aria-labelledby="goal-label">
+      <button type="button" class="chip selected" data-goal="">What's next</button>
+      <button type="button" class="chip" data-goal="protein">Protein</button>
+      <button type="button" class="chip" data-goal="calories">Calories</button>
+      <button type="button" class="chip" data-goal="balanced">Balanced</button>
+    </div>
+    <label id="recommend-meal-label">Log to meal</label>
+    <div class="chip-row" id="recommend-meal-chips" role="group" aria-labelledby="recommend-meal-label">
+      <button type="button" class="chip" data-meal="pw">🏃 Pre-workout</button>
+      <button type="button" class="chip" data-meal="bf">🌅 Breakfast</button>
+      <button type="button" class="chip" data-meal="lunch">🍛 Lunch</button>
+      <button type="button" class="chip" data-meal="snack">🍌 Snack</button>
+      <button type="button" class="chip" data-meal="dinner">🌙 Dinner</button>
+    </div>
+    <label class="checkbox-row"><input type="checkbox" id="instant-check"> True-instant (no-cook) only</label>
+    <label class="checkbox-row"><input type="checkbox" id="list-check"> Browse everything (skip the budget question)</label>
+    <label for="budget-input">Budget for this decision (optional)</label>
+    <input type="number" id="budget-input" min="0" step="1" placeholder="₹ — leave blank if unsure">
+    <button id="recommend-btn" class="primary">Get a suggestion</button>
+    <p id="recommend-error" class="error" role="alert"></p>
+  </div>
+  <div id="recommend-content" class="card-list"></div>
+</section>
+
+<section id="tab-catalogue" class="tab-panel">
+  <div class="card">
+    <label for="catalogue-search">Search</label>
+    <input type="search" id="catalogue-search" placeholder="Search foods…">
+    <label id="catalogue-role-label">Filter</label>
+    <div class="chip-row" id="catalogue-role-chips" role="group" aria-labelledby="catalogue-role-label">
+      <button type="button" class="chip selected" data-role="">All</button>
+      <button type="button" class="chip" data-role="protein">Protein</button>
+      <button type="button" class="chip" data-role="calorie">Calories</button>
+      <button type="button" class="chip" data-role="protein_calorie">Protein + calories</button>
+      <button type="button" class="chip" data-role="fiber">Fiber</button>
+      <button type="button" class="chip" data-role="convenience">Convenience</button>
+    </div>
+    <div class="chip-row" id="catalogue-tier-chips" role="group" aria-label="Preparation">
+      <button type="button" class="chip selected" data-tier="">Any prep</button>
+      <button type="button" class="chip" data-tier="true_instant">True instant</button>
+      <button type="button" class="chip" data-tier="mix_assemble">Mix &amp; assemble</button>
+      <button type="button" class="chip" data-tier="minimal_preparation">Minimal prep</button>
+    </div>
+    <label class="checkbox-row"><input type="checkbox" id="catalogue-no-fridge"> No refrigeration needed</label>
+  </div>
+  <div id="catalogue-content" class="catalogue-grid"></div>
+</section>
+
+<section id="tab-plans" class="tab-panel">
+  <div id="plans-content" class="card-list"></div>
+</section>
+
+</main>
+
+<footer>
+  Provisional / AI-estimated numbers are never final — only a manual estimation run's numbers are authoritative.
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head><link rel="stylesheet" href="demo-bar.css"><script src="demo-data.js"></script><script src="demo-shim.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Profile - Workout Programmer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body><div id="demo-bar"><span class="lg">Workout Programmer · read-only demo with sample data</span><span class="sm">Demo · sample data</span><a href="../../index.html"><span class="lg">← Back to portfolio</span><span class="sm">← Portfolio</span></a></div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header id="app-header" class="app-header"></header>
+
+  <main id="main-content">
+    <h1>Training profile</h1>
+    <p class="muted">These are constraints the programming engine reads as data — never assumptions baked into any code.</p>
+
+    <section>
+      <h2>Training settings</h2>
+      <p class="faint">Exercises to prefer, dislike or avoid, and your training-experience level.</p>
+      <a class="btn" href="coaching-settings.html">Open training settings</a>
+    </section>
+
+    <form id="profile-form">
+      <section>
+        <h2>Weekly training schedule</h2>
+        <p class="muted">Each day is Gym, Badminton, Both, or Rest — an unselected day is rest. Change any day any time.</p>
+        <div id="daily-activity-list" class="day-list"></div>
+        <label>Preferred split (free text, e.g. "push-pull-legs")
+          <input id="preferred-split" type="text" />
+        </label>
+        <label>Week starts on
+          <select id="week-start-day"></select>
+        </label>
+      </section>
+
+      <section>
+        <h2>Session constraints</h2>
+        <label>Default duration (minutes)
+          <input id="default-duration" type="number" min="0" value="60" />
+        </label>
+        <label>Minimum duration (minutes)
+          <input id="min-duration" type="number" min="0" value="30" />
+        </label>
+        <label>Maximum duration (minutes)
+          <input id="max-duration" type="number" min="0" value="90" />
+        </label>
+        <div id="duration-error" class="field-error" role="alert"></div>
+      </section>
+
+      <section>
+        <h2>Equipment</h2>
+        <label>Available equipment
+          <select id="equipment" multiple size="10"></select>
+        </label>
+      </section>
+
+      <section>
+        <h2>Timezone</h2>
+        <label>IANA timezone name (e.g. "Asia/Kolkata")
+          <input id="timezone" type="text" required />
+        </label>
+      </section>
+
+      <div class="btn-row">
+        <button type="submit">Save profile</button>
+      </div>
+      <div id="save-status"></div>
+    </form>
+  </main>
+
+  <script src="app.js"></script>
+  <script>
+    renderAppHeader('profile.html');
+
+    const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    const DAILY_ACTIVITY_OPTIONS = [
+      { value: 'gym', text: 'Gym' },
+      { value: 'badminton', text: 'Badminton' },
+      { value: 'both', text: 'Both' },
+      { value: 'unselected', text: 'Rest' },
+    ];
+
+    // Blueprint Picker/Daily Activity spec §5/§6: one Gym/Badminton/Both/
+    // Rest state per weekday, replacing the old separate "Training days"
+    // multi-select + free-text "Recurring activities" list. Derived the
+    // same way the backend derives it (src/lib/dailyActivity.ts) — gym =
+    // training_days membership, badminton = a 'badminton'-typed
+    // other_activity_schedule entry for that day, both = both, otherwise
+    // rest — kept client-side since the full profile (which already has
+    // both underlying arrays) is already loaded here.
+    let dailyActivities = WEEKDAYS.map((weekday) => ({ weekday, activity: 'unselected' }));
+    // Any non-badminton recurring activity (e.g. a custom "hiking" entry)
+    // is not part of this Gym/Badminton/Both/Rest model and has no editor
+    // here, but must never be silently dropped on Save (spec §5: "do not
+    // delete old data") — carried through untouched.
+    let preservedNonBadmintonActivities = [];
+
+    function deriveDailyActivities(trainingDays, otherActivitySchedule) {
+      return WEEKDAYS.map((weekday) => {
+        const gym = trainingDays.includes(weekday);
+        const badminton = otherActivitySchedule.some((a) => a.day === weekday && a.activity_type === 'badminton');
+        const activity = gym && badminton ? 'both' : gym ? 'gym' : badminton ? 'badminton' : 'unselected';
+        return { weekday, activity };
+      });
+    }
+
+    function formatEquipmentLabel(id) {
+      return id.replace(/(^|\s)\w/g, (m) => m.toUpperCase());
+    }
+
+    function renderDailyActivities() {
+      const container = document.getElementById('daily-activity-list');
+      container.innerHTML = '';
+      dailyActivities.forEach((entry) => {
+        const row = el('div', { class: 'day-list-row daily-activity-row' });
+        row.appendChild(el('span', { class: 'day-label', text: formatWeekday(entry.weekday) }));
+        const select = el('select', { 'aria-label': `${formatWeekday(entry.weekday)} activity` },
+          DAILY_ACTIVITY_OPTIONS.map((opt) => el('option', { value: opt.value, text: opt.text, ...(entry.activity === opt.value ? { selected: 'selected' } : {}) }))
+        );
+        select.addEventListener('change', () => { entry.activity = select.value; });
+        row.appendChild(select);
+        container.appendChild(row);
+      });
+    }
+
+    async function loadEquipmentOptions() {
+      const equipment = await api('/api/blueprint/equipment');
+      const select = document.getElementById('equipment');
+      for (const e of equipment) select.appendChild(el('option', { value: e.id, text: `${formatEquipmentLabel(e.id)} (${e.exerciseCount} exercises)` }));
+    }
+
+    function loadDayOptions() {
+      const weekStart = document.getElementById('week-start-day');
+      for (const d of WEEKDAYS) weekStart.appendChild(el('option', { value: d, text: formatWeekday(d) }));
+      weekStart.value = 'monday';
+      renderDailyActivities();
+    }
+
+    // Notes on an existing badminton day are carried forward on Save
+    // (spec §5: do not delete old data) even though this trimmed UI has
+    // no notes field of its own — keyed by weekday so a day that stays
+    // badminton/both keeps whatever notes it already had.
+    let originalBadmintonNotesByDay = {};
+
+    async function loadProfile() {
+      const profile = await api('/api/training-profile');
+      if (!profile) {
+        document.getElementById('timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        return;
+      }
+      document.getElementById('timezone').value = profile.timezone;
+      document.getElementById('week-start-day').value = profile.week_start_day;
+      document.getElementById('preferred-split').value = profile.preferred_split || '';
+      document.getElementById('default-duration').value = profile.default_session_duration_minutes;
+      document.getElementById('min-duration').value = profile.minimum_session_duration_minutes;
+      document.getElementById('max-duration').value = profile.maximum_session_duration_minutes;
+      for (const opt of document.getElementById('equipment').options) opt.selected = profile.available_equipment.includes(opt.value);
+
+      dailyActivities = deriveDailyActivities(profile.training_days, profile.other_activity_schedule);
+      preservedNonBadmintonActivities = profile.other_activity_schedule.filter((a) => a.activity_type !== 'badminton').map((a) => ({ ...a }));
+      originalBadmintonNotesByDay = {};
+      for (const a of profile.other_activity_schedule) {
+        if (a.activity_type === 'badminton') originalBadmintonNotesByDay[a.day] = a.notes ?? null;
+      }
+      renderDailyActivities();
+    }
+
+    function validateDurations() {
+      const min = Number(document.getElementById('min-duration').value);
+      const def = Number(document.getElementById('default-duration').value);
+      const max = Number(document.getElementById('max-duration').value);
+      const errorEl = document.getElementById('duration-error');
+      const invalid = !(min <= def && def <= max);
+      errorEl.textContent = invalid ? 'Minimum duration must be ≤ default duration ≤ maximum duration.' : '';
+      for (const id of ['min-duration', 'default-duration', 'max-duration']) {
+        document.getElementById(id).classList.toggle('field-invalid', invalid);
+      }
+      return !invalid;
+    }
+    for (const id of ['min-duration', 'default-duration', 'max-duration']) {
+      document.getElementById(id).addEventListener('input', validateDurations);
+    }
+
+    document.getElementById('profile-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!validateDurations()) return; // spec §39: do not submit; inline error already shown
+
+      const training_days = dailyActivities.filter((d) => d.activity === 'gym' || d.activity === 'both').map((d) => d.weekday);
+      const badmintonEntries = dailyActivities
+        .filter((d) => d.activity === 'badminton' || d.activity === 'both')
+        .map((d) => ({ day: d.weekday, activity_type: 'badminton', notes: originalBadmintonNotesByDay[d.weekday] ?? null }));
+      const other_activity_schedule = [...preservedNonBadmintonActivities, ...badmintonEntries];
+      const available_equipment = [...document.getElementById('equipment').selectedOptions].map((o) => o.value);
+      const button = e.target.querySelector('button[type="submit"]');
+      const statusEl = document.getElementById('save-status');
+      try {
+        await withSaving(button, statusEl, () => api('/api/training-profile', {
+          method: 'PUT',
+          body: {
+            timezone: document.getElementById('timezone').value,
+            week_start_day: document.getElementById('week-start-day').value,
+            training_days,
+            preferred_split: document.getElementById('preferred-split').value || null,
+            default_session_duration_minutes: Number(document.getElementById('default-duration').value),
+            minimum_session_duration_minutes: Number(document.getElementById('min-duration').value),
+            maximum_session_duration_minutes: Number(document.getElementById('max-duration').value),
+            available_equipment,
+            other_activity_schedule,
+          },
+        }), 'Profile saved.');
+        // spec §50: invalidate + reload anything that depends on this — the
+        // next visit to Program/Today will naturally re-fetch (no manual
+        // refresh needed since those pages always load fresh on entry).
+      } catch (err) {
+        // entered values are preserved — form untouched on failure (spec §61)
+      }
+    });
+
+    loadDayOptions();
+    loadEquipmentOptions().then(loadProfile);
+  </script>
+</body>
+</html>

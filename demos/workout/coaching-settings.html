@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head><link rel="stylesheet" href="demo-bar.css"><script src="demo-data.js"></script><script src="demo-shim.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Training Settings - Workout Programmer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body><div id="demo-bar"><span class="lg">Workout Programmer · read-only demo with sample data</span><span class="sm">Demo · sample data</span><a href="../../index.html"><span class="lg">← Back to portfolio</span><span class="sm">← Portfolio</span></a></div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header id="app-header" class="app-header"></header>
+
+  <main id="main-content">
+    <p><a href="profile.html">← Profile</a></p>
+    <h1>Training settings</h1>
+    <p class="muted">Manage which exercises the program favors or avoids, and the training-experience level it programs around. Every setting here is wired to your real program — nothing here is decorative.</p>
+
+    <section>
+      <h2>Exercise preferences</h2>
+      <p class="faint">Preferred and disliked exercises are a soft signal — the program may favor or deprioritize them. Avoided exercises are a hard rule — the program will not prescribe them until you remove the rule.</p>
+      <div id="preferences-list"></div>
+
+      <h3>Add or update a preference</h3>
+      <div id="exercise-picker-root"></div>
+      <label for="preference-kind">Preference kind
+        <select id="preference-kind" aria-label="Preference kind">
+          <option value="preferred">Preferred — the program may favor this exercise</option>
+          <option value="disliked">Disliked — the program may deprioritize this exercise</option>
+          <option value="avoided">Avoided — will not be prescribed unless you remove it</option>
+        </select>
+      </label>
+      <label for="preference-until">Temporary until (optional)
+        <span class="field-hint">Leave blank for a rule that stays in effect until you remove it.</span>
+        <input id="preference-until" type="date" />
+      </label>
+      <label for="preference-reason">Reason (optional)
+        <input id="preference-reason" type="text" maxlength="200" placeholder="e.g. shoulder discomfort" />
+      </label>
+      <div class="btn-row">
+        <button type="button" id="save-preference-btn">Save preference</button>
+      </div>
+      <div id="preference-save-status"></div>
+    </section>
+
+    <section>
+      <h2>Training experience</h2>
+      <p class="faint">The only profile factor that currently affects programming — it influences which intensity techniques the program considers eligible for you.</p>
+      <div id="training-experience-display"></div>
+      <label for="training-experience-select">Set training experience
+        <select id="training-experience-select" aria-label="Training experience">
+          <option value="novice">Novice</option>
+          <option value="intermediate">Intermediate</option>
+          <option value="advanced">Advanced</option>
+        </select>
+      </label>
+      <div class="btn-row">
+        <button type="button" id="save-experience-btn">Save</button>
+        <button type="button" id="clear-experience-btn" class="btn-secondary">Clear</button>
+      </div>
+      <div id="experience-save-status"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+  <script>
+    renderAppHeader('profile.html');
+
+    // ---------- Exercise preferences (data contract §3) ----------
+
+    let exerciseCatalog = [];
+    let picker = null;
+
+    async function loadExerciseCatalog() {
+      try {
+        exerciseCatalog = await api('/api/blueprint/exercises');
+      } catch {
+        // The picker degrades to an empty searchable list — never blocks
+        // the rest of the page (spec §8's "missing optional fields").
+        exerciseCatalog = [];
+      }
+      mountPicker();
+    }
+
+    function mountPicker() {
+      const root = document.getElementById('exercise-picker-root');
+      root.innerHTML = '';
+      picker = createBlueprintExercisePicker(exerciseCatalog, {});
+      root.appendChild(picker.root);
+    }
+
+    async function loadPreferences() {
+      const container = document.getElementById('preferences-list');
+      showLoading(container, 'Loading preferences…');
+      try {
+        const data = await api('/api/programming/preferences');
+        renderPreferences(data.rules);
+      } catch (err) {
+        showError(container, "We couldn't load your exercise preferences.", loadPreferences);
+      }
+    }
+
+    function renderPreferences(rules) {
+      const container = document.getElementById('preferences-list');
+      container.innerHTML = '';
+      if (!rules || rules.length === 0) {
+        showEmpty(container, 'You have not added exercise preferences yet.');
+        return;
+      }
+      for (const rule of rules) container.appendChild(buildPreferenceCard(rule));
+    }
+
+    function buildPreferenceCard(rule) {
+      const kind = formatPreferenceKind(rule.preference);
+      const card = createCard();
+      const row = el('div', { class: 'card-row' });
+      const left = el('div');
+      left.appendChild(el('div', { class: 'card-title', text: rule.exerciseName }));
+      left.appendChild(el('div', { class: 'card-subtitle', text: kind.description }));
+      row.appendChild(left);
+      row.appendChild(createStatusBadge(rule.preference === 'avoided' ? 'skipped' : 'planned', kind.label));
+      card.appendChild(row);
+      if (rule.temporaryUntil) {
+        card.appendChild(el('p', { class: 'faint', text: `Until ${formatDate(rule.temporaryUntil)}`, style: 'margin:0.3rem 0 0' }));
+      }
+      if (rule.reason) {
+        card.appendChild(el('p', { class: 'faint', text: rule.reason, style: 'margin:0.2rem 0 0' }));
+      }
+      const statusEl = el('div');
+      const removeBtn = createButton({
+        label: 'Remove',
+        variant: 'danger',
+        ariaLabel: `Remove preference for ${rule.exerciseName}`,
+        onClick: async () => {
+          try {
+            await withSaving(
+              removeBtn,
+              statusEl,
+              () => api(`/api/programming/preferences/${encodeURIComponent(rule.exerciseId)}`, { method: 'DELETE' }),
+              'Preference removed.'
+            );
+            await loadPreferences(); // re-fetch rather than an optimistic local removal (spec §8)
+          } catch (err) {
+            /* error already shown inline by withSaving; row stays visible */
+          }
+        },
+      });
+      card.appendChild(el('div', { class: 'btn-row' }, [removeBtn]));
+      card.appendChild(statusEl);
+      return card;
+    }
+
+    document.getElementById('save-preference-btn').addEventListener('click', async () => {
+      const button = document.getElementById('save-preference-btn');
+      const statusEl = document.getElementById('preference-save-status');
+      const selected = picker ? picker.getSelected() : null;
+      if (!selected) {
+        showInlineStatus(statusEl, 'error', 'Choose an exercise from the list first.');
+        return;
+      }
+      const preference = document.getElementById('preference-kind').value;
+      const temporaryUntil = document.getElementById('preference-until').value || null;
+      const reason = document.getElementById('preference-reason').value.trim() || null;
+      try {
+        await withSaving(
+          button,
+          statusEl,
+          () => api(`/api/programming/preferences/${encodeURIComponent(selected.id)}`, {
+            method: 'PUT',
+            body: { preference, temporaryUntil, reason },
+          }),
+          'Preference saved.'
+        );
+        picker.reset();
+        document.getElementById('preference-until').value = '';
+        document.getElementById('preference-reason').value = '';
+        await loadPreferences(); // re-fetch rather than trust the local form state (spec §8)
+      } catch (err) {
+        /* entered values preserved on failure — error already shown inline */
+      }
+    });
+
+    // ---------- Training experience (data contract §3) ----------
+
+    async function loadTrainingExperience() {
+      const display = document.getElementById('training-experience-display');
+      showLoading(display, 'Loading…');
+      try {
+        const data = await api('/api/programming/profile-factors');
+        const factor = (data.factors || []).find((f) => f.factorName === 'training_experience') || null;
+        renderTrainingExperience(factor);
+      } catch (err) {
+        showError(display, "We couldn't load your training experience.", loadTrainingExperience);
+      }
+    }
+
+    function renderTrainingExperience(factor) {
+      const display = document.getElementById('training-experience-display');
+      display.innerHTML = '';
+      if (!factor) {
+        display.appendChild(el('p', { class: 'muted', text: 'Not set.', style: 'margin:0' }));
+        return;
+      }
+      document.getElementById('training-experience-select').value = factor.value;
+      display.appendChild(
+        el('p', { class: 'muted', text: `Current: ${capitalize(factor.value)} — this influences which intensity techniques the program considers eligible for you.`, style: 'margin:0' })
+      );
+      const confirmState = factor.userConfirmed ? 'Confirmed by you' : 'Not yet confirmed';
+      const source = factor.source || 'User-entered';
+      display.appendChild(el('p', { class: 'faint', text: `${confirmState} · Source: ${source}`, style: 'margin:0.2rem 0 0' }));
+    }
+
+    document.getElementById('save-experience-btn').addEventListener('click', async () => {
+      const button = document.getElementById('save-experience-btn');
+      const statusEl = document.getElementById('experience-save-status');
+      const value = document.getElementById('training-experience-select').value;
+      try {
+        await withSaving(
+          button,
+          statusEl,
+          () => api('/api/programming/profile-factors/training_experience', { method: 'PUT', body: { value, userConfirmed: true } }),
+          'Training experience saved.'
+        );
+        await loadTrainingExperience();
+      } catch (err) {
+        /* error already shown inline */
+      }
+    });
+
+    document.getElementById('clear-experience-btn').addEventListener('click', async () => {
+      const button = document.getElementById('clear-experience-btn');
+      const statusEl = document.getElementById('experience-save-status');
+      try {
+        await withSaving(
+          button,
+          statusEl,
+          () => api('/api/programming/profile-factors/training_experience', { method: 'DELETE' }),
+          'Training experience cleared.'
+        );
+        await loadTrainingExperience();
+      } catch (err) {
+        /* error already shown inline */
+      }
+    });
+
+    loadExerciseCatalog();
+    loadPreferences();
+    loadTrainingExperience();
+  </script>
+</body>
+</html>

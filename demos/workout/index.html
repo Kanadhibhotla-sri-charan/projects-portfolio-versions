@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head><link rel="stylesheet" href="demo-bar.css"><script src="demo-data.js"></script><script src="demo-shim.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Goals - Workout Programmer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body><div id="demo-bar"><span class="lg">Workout Programmer · read-only demo with sample data</span><span class="sm">Demo · sample data</span><a href="../../index.html"><span class="lg">← Back to portfolio</span><span class="sm">← Portfolio</span></a></div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header id="app-header" class="app-header"></header>
+
+  <main id="main-content">
+    <h1>Goals</h1>
+    <div id="goal-list"></div>
+
+    <section id="measurements-section">
+      <h2>Body measurements</h2>
+      <p class="muted">The numbers behind your goals. Measure every two weeks, in the morning before eating, with the tape in the same spot each time.</p>
+      <div id="measurement-form"></div>
+      <div id="measurement-list"></div>
+    </section>
+
+    <section>
+      <h2>Describe what you want to improve</h2>
+      <form id="nl-form">
+        <label>What do you want to improve?
+          <input id="nl-text" type="text" placeholder="e.g. My arms look thin from the side" required />
+        </label>
+        <div class="btn-row"><button type="submit">Find goal</button></div>
+      </form>
+      <div id="nl-candidates"></div>
+    </section>
+
+    <section>
+      <h2>Or choose directly</h2>
+      <form id="goal-form">
+        <label>Type
+          <select id="goal-type">
+            <option value="aesthetic">Aesthetic</option>
+            <option value="functional">Functional</option>
+          </select>
+        </label>
+        <label>Blueprint outcome/goal
+          <select id="goal-ref"></select>
+        </label>
+        <label>Priority (1 = highest)
+          <input id="goal-priority" type="number" value="1" min="1" />
+        </label>
+        <label>Notes
+          <input id="goal-notes" type="text" />
+        </label>
+        <div class="btn-row"><button type="submit">Add goal</button></div>
+        <div id="goal-form-status"></div>
+      </form>
+    </section>
+  </main>
+  <div id="day-modal-root"></div>
+
+  <script src="app.js"></script>
+  <script>
+    renderAppHeader('index.html');
+
+    let blueprintGoalsByRef = {}; // blueprint_ref -> {display_name, ...}
+
+    async function loadBlueprintGoalOptions() {
+      const type = document.getElementById('goal-type').value;
+      const list = type === 'aesthetic' ? await api('/api/blueprint/aesthetic-goals') : await api('/api/blueprint/functional-goals');
+      const select = document.getElementById('goal-ref');
+      select.innerHTML = '';
+      for (const g of list) {
+        const label = g.display_name || g.name;
+        blueprintGoalsByRef[g.id] = g;
+        select.appendChild(el('option', { value: g.id, text: label }));
+      }
+    }
+
+    async function loadAllBlueprintGoals() {
+      const [aesthetic, functional] = await Promise.all([api('/api/blueprint/aesthetic-goals'), api('/api/blueprint/functional-goals')]);
+      for (const g of [...aesthetic, ...functional]) blueprintGoalsByRef[g.id] = g;
+    }
+
+    function blueprintDisplayName(blueprintRef) {
+      return blueprintGoalsByRef[blueprintRef]?.display_name || blueprintGoalsByRef[blueprintRef]?.name || blueprintRef;
+    }
+
+    // ---------- Goal list ----------
+
+    async function loadGoals() {
+      const container = document.getElementById('goal-list');
+      showLoading(container, 'Loading goals…');
+      try {
+        const goals = await api('/api/goals');
+        renderGoals(goals);
+      } catch (err) {
+        showError(container, "We couldn't load your goals.", loadGoals);
+      }
+    }
+
+    function renderGoals(goals) {
+      const container = document.getElementById('goal-list');
+      container.innerHTML = '';
+      if (goals.length === 0) {
+        showEmpty(container, 'No active goals yet. Add an aesthetic or functional goal below to let the programmer personalize your training.');
+        return;
+      }
+
+      const activeAesthetic = goals.filter((g) => g.active && g.goal_type === 'aesthetic').sort((a, b) => a.priority - b.priority);
+      const aestheticRank = new Map(activeAesthetic.map((g, i) => [g.id, i + 1]));
+
+      const active = goals.filter((g) => g.active).sort((a, b) => a.priority - b.priority);
+      const inactive = goals.filter((g) => !g.active);
+
+      for (const g of active) container.appendChild(buildGoalCard(g, aestheticRank.get(g.id)));
+      if (inactive.length > 0) {
+        container.appendChild(el('h3', { text: 'Inactive' }));
+        for (const g of inactive) container.appendChild(buildGoalCard(g, null));
+      }
+    }
+
+    function buildGoalCard(goal, aestheticRank) {
+      const card = createCard();
+      const header = el('div', { class: 'card-row' });
+      const left = el('div', { style: 'display:flex;align-items:center;gap:0.6rem' });
+      if (aestheticRank) left.appendChild(el('span', { class: 'goal-rank-badge', text: `G${aestheticRank}`, 'aria-label': `Goal ${aestheticRank}` }));
+      const titleWrap = el('div');
+      titleWrap.appendChild(el('div', { class: 'card-title', text: blueprintDisplayName(goal.blueprint_ref) }));
+      titleWrap.appendChild(el('div', { class: 'card-subtitle', text: `${formatGoalType(goal.goal_type)} · Priority ${goal.priority}${goal.active ? '' : ' · Inactive'}` }));
+      left.appendChild(titleWrap);
+      header.appendChild(left);
+      card.appendChild(header);
+
+      if (goal.source === 'natural_language' && goal.source_text) {
+        card.appendChild(el('div', { class: 'goal-insight', text: `"${goal.source_text}"` }));
+      } else {
+        card.appendChild(el('p', { class: 'faint', text: 'No original insight provided.' }));
+      }
+      if (goal.notes) card.appendChild(el('p', { class: 'muted', text: goal.notes }));
+
+      const statusEl = el('div');
+      const actions = el('div', { class: 'btn-row' });
+
+      actions.appendChild(createButton({ label: 'View Blueprint context', variant: 'secondary', onClick: () => viewBlueprintContext(goal) }));
+
+      if (goal.active) {
+        const priorityInput = el('input', { type: 'number', min: '1', value: String(goal.priority), style: 'width:5rem;display:inline-block;margin:0' });
+        const changePriorityBtn = createButton({
+          label: 'Change priority', variant: 'secondary',
+          onClick: async () => {
+            if (actions.contains(priorityInput)) {
+              try {
+                await withSaving(changePriorityBtn, statusEl, () => api(`/api/goals/${goal.id}/priority`, { method: 'PATCH', body: { priority: Number(priorityInput.value) } }), 'Priority updated.');
+                await loadGoals();
+              } catch (err) { /* backend error shown inline; form untouched */ }
+            } else {
+              actions.insertBefore(priorityInput, changePriorityBtn);
+              changePriorityBtn.textContent = 'Save priority';
+            }
+          },
+        });
+        actions.appendChild(changePriorityBtn);
+
+        actions.appendChild(createButton({
+          label: 'Deactivate', variant: 'danger',
+          onClick: async (e) => {
+            try {
+              await withSaving(e.currentTarget, statusEl, () => api(`/api/goals/${goal.id}/deactivate`, { method: 'POST' }), 'Deactivated.');
+              await loadGoals();
+            } catch (err) { /* inline error shown */ }
+          },
+        }));
+      } else {
+        actions.appendChild(createButton({
+          label: 'Reactivate', variant: 'secondary',
+          onClick: async (e) => {
+            try {
+              await withSaving(e.currentTarget, statusEl, () => api(`/api/goals/${goal.id}/reactivate`, { method: 'POST' }), 'Reactivated.');
+              await loadGoals();
+            } catch (err) { /* inline error — e.g. backend's real 3rd-active-aesthetic-goal rejection */ }
+          },
+        }));
+      }
+
+      if (goal.active && goal.goal_type === 'aesthetic') {
+        actions.insertBefore(createButton({ label: 'Check in', variant: 'primary', onClick: () => openCheckIn(goal) }), actions.firstChild);
+      }
+      actions.appendChild(createButton({ label: 'History', variant: 'ghost', onClick: () => viewGoalHistory(goal) }));
+
+      if (goal.active && goal.goal_type === 'aesthetic') {
+        const lastEl = el('p', { class: 'faint', style: 'margin:0.2rem 0 0.4rem' });
+        card.appendChild(lastEl);
+        showLastCheckIn(goal, lastEl);
+      }
+      card.appendChild(actions);
+      card.appendChild(statusEl);
+      return card;
+    }
+
+    function openModal(titleText, bodyEls) {
+      const root = document.getElementById('day-modal-root');
+      root.innerHTML = '';
+      const panel = el('div', { class: 'modal-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': titleText });
+      const header = el('div', { class: 'modal-header' }, [el('h2', { text: titleText, style: 'margin:0' })]);
+      const closeBtn = el('button', { class: 'modal-close', type: 'button', 'aria-label': 'Close' }, [document.createTextNode('×')]);
+      const close = () => { root.innerHTML = ''; document.removeEventListener('keydown', onKey); };
+      const onKey = (e) => { if (e.key === 'Escape') close(); };
+      closeBtn.addEventListener('click', close);
+      header.appendChild(closeBtn);
+      panel.appendChild(header);
+      for (const b of bodyEls) panel.appendChild(b);
+      const backdrop = el('div', { class: 'modal-backdrop' }, [panel]);
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+      document.addEventListener('keydown', onKey);
+      root.appendChild(backdrop);
+      closeBtn.focus();
+    }
+
+    // Goal check-in (2026-10-11): how the target area looks compared with
+    // the last check-in, on the app's 1-5 scale. Goal progress and volume
+    // decisions read these; the API existed but the page had no way in.
+    const CHECK_IN_LABELS = { 1: 'Significantly worse', 2: 'Slightly worse', 3: 'No meaningful change', 4: 'Improved', 5: 'Significantly improved' };
+
+    async function showLastCheckIn(goal, target) {
+      try {
+        const list = await api(`/api/goals/${goal.id}/assessments`);
+        const last = [...list].sort((a, b) => b.date.localeCompare(a.date))[0];
+        target.textContent = last
+          ? `Last check-in ${formatDate(last.date)}: ${CHECK_IN_LABELS[last.rating]}. Next due ${formatDate(addDaysIso(last.date, goal.review_cadence_days))}.`
+          : 'No check-in yet.';
+      } catch {
+        target.textContent = '';
+      }
+    }
+
+    function addDaysIso(date, days) {
+      const d = new Date(`${date}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    }
+
+    function openCheckIn(goal) {
+      const statusEl = el('div');
+      const dateInput = el('input', { type: 'date', value: todayIso(), max: todayIso() });
+      const options = Object.entries(CHECK_IN_LABELS).map(([value, label]) =>
+        el('label', { style: 'display:flex;align-items:center;gap:0.5rem;margin:0.3rem 0' }, [el('input', { type: 'radio', name: 'checkin-rating', value }), document.createTextNode(`${value} — ${label}`)])
+      );
+      const notes = el('textarea', { rows: '3', maxlength: '1000', placeholder: 'Optional: what you see in the mirror or photos, e.g. "side view looks fuller".', style: 'width:100%;resize:vertical;font:inherit' });
+      const saveBtn = createButton({ label: 'Save check-in', variant: 'primary', onClick: async () => {
+        const chosen = options.map((o) => o.querySelector('input')).find((i) => i.checked);
+        if (!chosen) return showInlineStatus(statusEl, 'error', 'Choose how it looks compared with last time.');
+        try {
+          await withSaving(saveBtn, statusEl, () => api(`/api/goals/${goal.id}/assessments`, { method: 'POST', body: { date: dateInput.value, rating: Number(chosen.value), notes: notes.value.trim() || null } }), 'Check-in saved.');
+          document.getElementById('day-modal-root').innerHTML = '';
+          await loadGoals();
+        } catch (err) { /* error shown inline */ }
+      }});
+      openModal(`Check in: ${blueprintDisplayName(goal.blueprint_ref)}`, [
+        el('p', { class: 'muted', text: 'Compared with your last check-in (or with when you set this goal), how does this area look? Use the same mirror, light and angle each time.' }),
+        el('label', { text: 'Date' }), dateInput,
+        el('div', { style: 'margin-top:0.6rem' }, options),
+        el('label', { text: 'Notes', style: 'display:block;margin-top:0.6rem' }), notes,
+        el('div', { class: 'btn-row', style: 'margin-top:0.6rem' }, [saveBtn]), statusEl,
+      ]);
+    }
+
+    async function viewBlueprintContext(goal) {
+      openModal(blueprintDisplayName(goal.blueprint_ref), [el('p', { class: 'muted', text: 'Loading…' })]);
+      try {
+        const context = await api(`/api/goals/${goal.id}/blueprint`);
+        const body = [];
+        if (context.definition) body.push(el('p', { text: context.definition }));
+        if (context.technical_explanation) body.push(el('p', { class: 'muted', text: context.technical_explanation }));
+        if (context.visual_description) body.push(el('p', { text: context.visual_description }));
+        if (body.length === 0) body.push(el('p', { class: 'muted', text: 'No additional Blueprint detail available.' }));
+        openModal(blueprintDisplayName(goal.blueprint_ref), body);
+      } catch (err) {
+        openModal(blueprintDisplayName(goal.blueprint_ref), [el('p', { class: 'muted', text: "Couldn't load Blueprint context." })]);
+      }
+    }
+
+    async function viewGoalHistory(goal) {
+      openModal(`History — ${blueprintDisplayName(goal.blueprint_ref)}`, [el('p', { class: 'muted', text: 'Loading…' })]);
+      try {
+        const events = await api(`/api/goals/${goal.id}/events`);
+        const body = events.length === 0
+          ? [el('p', { class: 'muted', text: 'No history yet.' })]
+          : events.map((ev) => el('div', { class: 'card' }, [
+              el('div', { class: 'card-title', text: formatEventType(ev.event_type) }),
+              el('div', { class: 'faint', text: new Date(ev.occurred_at).toLocaleString() }),
+              ev.notes ? el('div', { class: 'muted', text: ev.notes }) : null,
+            ].filter(Boolean)));
+        openModal(`History — ${blueprintDisplayName(goal.blueprint_ref)}`, body);
+      } catch (err) {
+        openModal('History', [el('p', { class: 'muted', text: "Couldn't load goal history." })]);
+      }
+    }
+
+    const EVENT_TYPE_LABEL = {
+      created: 'Created', activated: 'Activated', deactivated: 'Deactivated',
+      priority_changed: 'Priority changed', cadence_changed: 'Review cadence changed',
+      exercise_changed: 'Exercise changed', programming_modified: 'Programming modified',
+    };
+    function formatEventType(type) { return EVENT_TYPE_LABEL[type] || type; }
+
+    // ---------- Natural-language matching (spec §18) ----------
+
+    document.getElementById('nl-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const container = document.getElementById('nl-candidates');
+      const text = document.getElementById('nl-text').value;
+      showLoading(container, 'Finding matching goals…');
+      try {
+        const { candidates } = await api('/api/goals/match', { method: 'POST', body: { text } });
+        renderCandidates(container, candidates, text);
+      } catch (err) {
+        showError(container, err.message, () => document.getElementById('nl-form').requestSubmit());
+      }
+    });
+
+    function renderCandidates(container, candidates, originalText) {
+      container.innerHTML = '';
+      if (candidates.length === 0) {
+        showEmpty(container, 'No close match found. Try the "Or choose directly" section below instead.');
+        return;
+      }
+      for (const c of candidates) {
+        const card = createCard();
+        card.appendChild(el('div', { class: 'card-title', text: c.display_name }));
+        card.appendChild(el('div', { class: 'card-subtitle', text: `${formatGoalType(c.goal_type)} · matched on "${c.matched_on}"` }));
+
+        const priorityInput = el('input', { type: 'number', min: '1', value: '1', style: 'width:5rem;display:inline-block;margin-top:0.5rem' });
+        card.appendChild(el('label', { text: 'Priority' }, [priorityInput]));
+
+        const statusEl = el('div');
+        const confirmBtn = createButton({
+          label: 'Confirm this goal', onClick: async () => {
+            try {
+              await withSaving(confirmBtn, statusEl, () => api('/api/goals', {
+                method: 'POST',
+                body: {
+                  goal_type: c.goal_type,
+                  blueprint_ref: c.blueprint_ref,
+                  priority: Number(priorityInput.value),
+                  source: 'natural_language',
+                  source_text: originalText,
+                },
+              }), 'Goal added.');
+              document.getElementById('nl-text').value = '';
+              container.innerHTML = '';
+              await loadGoals();
+            } catch (err) { /* backend error (e.g. 3rd active aesthetic goal) shown inline — never worked around */ }
+          },
+        });
+        card.appendChild(confirmBtn);
+        card.appendChild(statusEl);
+        container.appendChild(card);
+      }
+    }
+
+    // ---------- Body measurements (2026-10-12) ----------
+    // Readings are stored per measurement name and unit; the server judges
+    // each change in the right direction (bigger arms = better, smaller
+    // waist = better, bodyweight not judged). See measurementMetrics.ts.
+
+    const DIRECTION_TEXT = { higher: 'Bigger is better', lower: 'Smaller is better', neutral: 'Tracked, not judged' };
+    const VERDICT_BADGE = { better: 'badge-success', worse: 'badge-warning', same: 'badge-neutral', 'not judged': 'badge-neutral', 'one reading': 'badge-neutral' };
+    const OTHER_METRIC = '__other__';
+
+    async function loadMeasurements() {
+      const formRoot = document.getElementById('measurement-form');
+      const listRoot = document.getElementById('measurement-list');
+      showLoading(listRoot, 'Loading measurements…');
+      try {
+        const [summary, goals] = await Promise.all([api('/api/goals/measurements/summary'), api('/api/goals')]);
+        renderMeasurementForm(formRoot, summary.presets, goals.filter((g) => g.active));
+        renderMeasurementList(listRoot, summary.series);
+      } catch (err) {
+        showError(listRoot, "We couldn't load your measurements.", loadMeasurements);
+      }
+    }
+
+    function renderMeasurementForm(root, presets, activeGoals) {
+      root.innerHTML = '';
+      const card = createCard();
+      card.appendChild(el('div', { class: 'card-title', text: 'Log a measurement' }));
+      const date = el('input', { type: 'date', value: todayIso(), max: todayIso(), 'aria-label': 'Date' });
+      const metric = el('select', { 'aria-label': 'Measurement' });
+      for (const p of presets) metric.appendChild(el('option', { value: p.name, text: capitalize(p.name) }));
+      metric.appendChild(el('option', { value: OTHER_METRIC, text: 'Other (type a name)' }));
+      const customName = el('input', { type: 'text', maxlength: '60', placeholder: 'e.g. neck', 'aria-label': 'Measurement name', hidden: true });
+      const value = el('input', { type: 'number', inputmode: 'decimal', step: '0.1', min: '0', placeholder: 'e.g. 34.5', 'aria-label': 'Value' });
+      const unit = el('input', { type: 'text', maxlength: '12', value: presets[0]?.unit ?? 'cm', 'aria-label': 'Unit', style: 'width:5rem' });
+      const direction = el('p', { class: 'faint', style: 'margin:0.2rem 0 0' });
+      const syncPreset = () => {
+        const preset = presets.find((p) => p.name === metric.value);
+        customName.hidden = !!preset;
+        if (preset) unit.value = preset.unit;
+        direction.textContent = preset ? DIRECTION_TEXT[preset.better] : 'Waist, hips, body fat, and times (a name with "time", or a unit in seconds/minutes): smaller is better. A name with "weight": not judged. Anything else: bigger is better.';
+      };
+      metric.addEventListener('change', syncPreset);
+      syncPreset();
+      const goal = el('select', { 'aria-label': 'Goal' });
+      goal.appendChild(el('option', { value: '', text: 'Not tied to a goal' }));
+      for (const g of activeGoals) goal.appendChild(el('option', { value: g.id, text: blueprintDisplayName(g.blueprint_ref) }));
+      const notes = el('input', { type: 'text', maxlength: '1000', placeholder: 'Optional, e.g. "left arm", "after training"', 'aria-label': 'Note' });
+      const statusEl = el('div');
+      const saveBtn = createButton({ label: 'Save measurement', onClick: async () => {
+        const name = metric.value === OTHER_METRIC ? customName.value.trim() : metric.value;
+        if (!name) return showInlineStatus(statusEl, 'error', 'Type a name for the measurement.');
+        if (value.value === '' || !(Number(value.value) > 0)) return showInlineStatus(statusEl, 'error', 'Enter the number you measured.');
+        try {
+          await withSaving(saveBtn, statusEl, () => api('/api/goals/measurements', { method: 'POST', body: {
+            date: date.value, metric_name: name, value: Number(value.value), unit: unit.value.trim(), goal_id: goal.value || null, notes: notes.value.trim() || null,
+          } }), 'Measurement saved.');
+          value.value = ''; notes.value = '';
+          renderMeasurementList(document.getElementById('measurement-list'), (await api('/api/goals/measurements/summary')).series);
+        } catch (err) { /* error shown inline; values kept */ }
+      }});
+      card.append(
+        el('label', { text: 'Date' }, [date]),
+        el('label', { text: 'Measurement' }, [metric]), customName, direction,
+        el('div', { style: 'display:flex;gap:0.5rem;align-items:flex-end' }, [el('label', { text: 'Value', style: 'flex:1' }, [value]), el('label', { text: 'Unit' }, [unit])]),
+        el('label', { text: 'Goal it reflects' }, [goal]),
+        el('label', { text: 'Note' }, [notes]),
+        el('div', { class: 'btn-row' }, [saveBtn]), statusEl,
+      );
+      root.appendChild(card);
+    }
+
+    function renderMeasurementList(root, series) {
+      root.innerHTML = '';
+      if (series.length === 0) return showEmpty(root, 'No measurements yet. Your first reading is the starting point; the second one shows the change.');
+      for (const s of series) {
+        const card = createCard();
+        const latest = s.readings[s.readings.length - 1];
+        const head = el('div', { class: 'card-row' });
+        head.appendChild(el('div', {}, [
+          el('div', { class: 'card-title', text: `${capitalize(s.metric)}: ${latest.value} ${s.unit}` }),
+          el('div', { class: 'card-subtitle', text: `${formatDate(latest.date)} · ${DIRECTION_TEXT[s.better]}${s.goals.length ? ` · ${s.goals.join(', ')}` : ''}` }),
+        ]));
+        head.appendChild(el('span', { class: `badge ${VERDICT_BADGE[s.verdict]}`, text: s.verdict === 'one reading' ? 'First reading' : capitalize(s.verdict) }));
+        card.appendChild(head);
+        if (s.change !== null) {
+          card.appendChild(el('p', { class: 'muted', style: 'margin:0.3rem 0 0', text: `${s.change > 0 ? '+' : ''}${s.change} ${s.unit} since ${formatDate(s.readings[0].date)} (${s.readings[0].value} ${s.unit}), ${s.readings.length} readings.` }));
+        }
+        const details = el('details');
+        details.appendChild(el('summary', { text: 'All readings' }));
+        for (const r of [...s.readings].reverse()) {
+          const statusEl = el('span', { class: 'faint' });
+          const del = createButton({ label: '×', variant: 'ghost', ariaLabel: `Delete ${s.metric} reading of ${formatDate(r.date)}`, onClick: async () => {
+            if (!window.confirm(`Delete the ${s.metric} reading of ${r.value} ${s.unit} on ${formatDate(r.date)}?`)) return;
+            try {
+              await api(`/api/goals/measurements/${r.id}`, { method: 'DELETE' });
+              renderMeasurementList(root, (await api('/api/goals/measurements/summary')).series);
+            } catch (err) { statusEl.textContent = ' Could not delete.'; }
+          }});
+          details.appendChild(el('div', { class: 'card-row', style: 'align-items:center' }, [
+            el('span', { text: `${formatDate(r.date)}: ${r.value} ${s.unit}${r.notes ? ` · ${r.notes}` : ''}` }), el('span', {}, [del, statusEl]),
+          ]));
+        }
+        card.appendChild(details);
+        root.appendChild(card);
+      }
+    }
+
+    // ---------- Structured creation ----------
+
+    document.getElementById('goal-type').addEventListener('change', loadBlueprintGoalOptions);
+
+    document.getElementById('goal-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const button = e.target.querySelector('button[type="submit"]');
+      const statusEl = document.getElementById('goal-form-status');
+      try {
+        await withSaving(button, statusEl, () => api('/api/goals', {
+          method: 'POST',
+          body: {
+            goal_type: document.getElementById('goal-type').value,
+            blueprint_ref: document.getElementById('goal-ref').value,
+            priority: Number(document.getElementById('goal-priority').value),
+            notes: document.getElementById('goal-notes').value || null,
+          },
+        }), 'Goal added.');
+        document.getElementById('goal-notes').value = '';
+        await loadGoals();
+      } catch (err) {
+        // Real backend error (e.g. TooManyActiveAestheticGoalsError) shown
+        // inline via withSaving — never worked around client-side (spec §20).
+      }
+    });
+
+    loadAllBlueprintGoals().then(() => { loadGoals(); loadMeasurements(); });
+    loadBlueprintGoalOptions();
+  </script>
+</body>
+</html>

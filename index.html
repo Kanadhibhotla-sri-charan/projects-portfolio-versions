@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sri Charan Kanadhibhotla</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Three fitness apps I specified and shipped as business analyst.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400&display=swap">
+<style>
+/* Layout: short intro, then three equal app cards (screenshot, name, one line, link). Nothing else. */
+:root {
+  --bg: #f4f6f7;
+  --card: #ffffff;
+  --ink: #15212a;
+  --soft: #5b6b76;
+  --line: #dde4e8;
+  --accent: #0b6e78;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "Hanken Grotesk", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #0d1418; --card: #141e24; --ink: #e6edf0; --soft: #95a6b1; --line: #26343c; --accent: #5cc6cf; color-scheme: dark; }
+}
+:root[data-theme="dark"] { --bg: #0d1418; --card: #141e24; --ink: #e6edf0; --soft: #95a6b1; --line: #26343c; --accent: #5cc6cf; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 1rem; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+.wrap {
+  max-width: 1080px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+h1, h2 { font-family: var(--display); margin: 0; line-height: 1.1; letter-spacing: -0.015em; text-wrap: balance; }
+p { margin: 0; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+
+header { padding-block: clamp(56px, 10vw, 112px) clamp(40px, 6vw, 64px); display: grid; gap: 18px; }
+.kicker { font-family: var(--mono); font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-size: clamp(2.4rem, 6vw, 3.8rem); font-weight: 700; }
+.role { font-size: 1.15rem; color: var(--soft); max-width: 36em; }
+.role strong { color: var(--ink); font-weight: 600; }
+
+.apps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; padding-bottom: 72px; }
+@media (max-width: 900px) { .apps { grid-template-columns: minmax(0, 1fr); max-width: 560px; } }
+.app { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: grid; grid-template-rows: auto 1fr; text-decoration: none; color: inherit; transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease; }
+a.app:hover { transform: translateY(-3px); border-color: var(--accent); box-shadow: 0 12px 28px -18px rgba(11, 110, 120, .55); }
+@media (prefers-reduced-motion: reduce) { .app { transition: none; } a.app:hover { transform: none; } }
+.shot { aspect-ratio: 16 / 11; overflow: hidden; border-bottom: 1px solid var(--line); background: var(--bg); max-width: 100%; }
+.shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block; }
+.body { padding: 20px 22px 22px; display: grid; gap: 10px; align-content: start; }
+.app h2 { font-size: 1.35rem; font-weight: 700; }
+.app p { color: var(--soft); }
+.foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line); }
+.stack { font-family: var(--mono); font-size: 0.74rem; color: var(--soft); }
+.go { font-weight: 600; color: var(--accent); white-space: nowrap; }
+
+footer { border-top: 1px solid var(--line); padding-block: 28px 44px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; font-size: 0.9rem; color: var(--soft); }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <span class="kicker">Business Analyst</span>
+  <h1>Sri Charan Kanadhibhotla</h1>
+  <p class="role">Three connected fitness apps where I was the <strong>analyst</strong>: I gathered the requirements, wrote the specs and acceptance criteria, and signed off every release. The code was written by Claude Code from those specs.</p>
+</header>
+
+<main class="wrap apps">
+  <a class="app" href="https://kanadhibhotla-sri-charan.github.io/workout-blueprint/" target="_blank" rel="noopener">
+    <div class="shot"><img src="img/bp-decide.jpg" alt="Physique Blueprint decision screen" width="1400" height="941"></div>
+    <div class="body">
+      <h2>Physique Blueprint</h2>
+      <p>Tells you which exercise to choose for a goal, and why, in plain language.</p>
+      <div class="foot"><span class="stack">React · TypeScript</span><span class="go">Open app →</span></div>
+    </div>
+  </a>
+
+  <a class="app" href="demos/workout/today.html">
+    <div class="shot"><img src="img/wl-today.jpg" alt="Workout Programmer weekly volume screen" width="1400" height="1436"></div>
+    <div class="body">
+      <h2>Workout Programmer</h2>
+      <p>Plans each day's workout around goals, recovery and schedule, then logs what was done.</p>
+      <div class="foot"><span class="stack">Node · SQLite</span><span class="go">Open demo →</span></div>
+    </div>
+  </a>
+
+  <a class="app" href="demos/food/index.html">
+    <div class="shot"><img src="img/ft-today.jpg" alt="Food Tracker daily calories and protein screen" width="1400" height="1317"></div>
+    <div class="body">
+      <h2>Food Tracker</h2>
+      <p>Tracks calories and protein for home-cooked meals, with a target that follows the day's workout.</p>
+      <div class="foot"><span class="stack">Python · JavaScript</span><span class="go">Open demo →</span></div>
+    </div>
+  </a>
+</main>
+
+<footer class="wrap">
+  <span>Sri Charan Kanadhibhotla</span>
+</footer>
+</body>
+</html>

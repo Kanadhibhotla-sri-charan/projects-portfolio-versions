@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head><link rel="stylesheet" href="demo-bar.css"><script src="demo-data.js"></script><script src="demo-shim.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>History - Workout Programmer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body><div id="demo-bar"><span class="lg">Workout Programmer · read-only demo with sample data</span><span class="sm">Demo · sample data</span><a href="../../index.html"><span class="lg">← Back to portfolio</span><span class="sm">← Portfolio</span></a></div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header id="app-header" class="app-header"></header>
+
+  <main id="main-content">
+    <h1>History</h1>
+
+    <section>
+      <h2>Recent workouts</h2>
+      <div id="recent-container"></div>
+    </section>
+
+    <section>
+      <h2>Exercise history</h2>
+      <label>Exercise
+        <input id="exercise-search" list="exercise-options" placeholder="Search Blueprint exercises…" />
+        <datalist id="exercise-options"></datalist>
+      </label>
+      <div id="exercise-history-container"></div>
+    </section>
+
+    <section>
+      <h2>Goal progress</h2>
+      <div id="goal-progress-container"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+  <script>
+    renderAppHeader('history.html');
+
+    async function loadRecent() {
+      const container = document.getElementById('recent-container');
+      showLoading(container, 'Loading recent workouts…');
+      try {
+        const sessions = await api('/api/workouts');
+        renderRecent(container, sessions);
+      } catch (err) {
+        showError(container, "We couldn't load your workout history.", loadRecent);
+      }
+    }
+
+    async function renderRecent(container, sessions) {
+      container.innerHTML = '';
+      if (sessions.length === 0) {
+        showEmpty(container, 'No workouts logged yet. Your completed workouts will appear here.');
+        return;
+      }
+      const recent = sessions.slice(0, 25);
+      const details = await Promise.all(recent.map((s) => api(`/api/workouts/${s.session_id}`).catch(() => null)));
+      recent.forEach((s, i) => container.appendChild(buildSessionCard(s, details[i])));
+    }
+
+    function buildSessionCard(session, detail) {
+      const card = createCard();
+      const header = el('div', { class: 'card-row' });
+      header.appendChild(el('div', { class: 'card-title', text: `${formatDate(session.date)} · ${formatSessionType(session.session_type)}` }));
+      header.appendChild(createStatusBadge(session.status, formatSessionType(session.status)));
+      card.appendChild(header);
+
+      const metaParts = [];
+      if (session.duration_minutes) metaParts.push(formatDuration(session.duration_minutes));
+      if (detail && detail.exercises) {
+        const completedSets = detail.exercises.reduce((sum, p) => sum + p.sets.filter((s) => s.completed).length, 0);
+        metaParts.push(`${detail.exercises.length} exercise${detail.exercises.length === 1 ? '' : 's'}`);
+        metaParts.push(`${completedSets} completed set${completedSets === 1 ? '' : 's'}`);
+      }
+      if (metaParts.length) card.appendChild(el('div', { class: 'card-subtitle', text: metaParts.join(' · ') }));
+
+      if (session.goal_context) card.appendChild(el('p', { class: 'muted', text: `Goal priority #${session.goal_context.priority}` }));
+      if (session.notes) card.appendChild(el('p', { class: 'faint', text: session.notes }));
+
+      card.appendChild(el('a', { class: 'btn btn-secondary btn-sm', href: `logger.html?session=${session.session_id}`, text: 'View workout' }));
+      return card;
+    }
+
+    // ---------- Exercise history ----------
+
+    let exercisesById = {};
+    async function loadExerciseOptions() {
+      const exercises = await api('/api/blueprint/exercises');
+      const datalist = document.getElementById('exercise-options');
+      for (const ex of exercises) {
+        exercisesById[ex.name] = ex.id;
+        datalist.appendChild(el('option', { value: ex.name }));
+      }
+    }
+
+    document.getElementById('exercise-search').addEventListener('change', async (e) => {
+      const container = document.getElementById('exercise-history-container');
+      const exerciseId = exercisesById[e.target.value];
+      if (!exerciseId) {
+        showEmpty(container, 'Pick an exercise from the list to see its history.');
+        return;
+      }
+      showLoading(container, 'Loading exercise history…');
+      try {
+        const { exercise_name, performances } = await api(`/api/workouts/exercises/${exerciseId}/history`);
+        renderExerciseHistory(container, exercise_name, performances);
+      } catch (err) {
+        showError(container, "We couldn't load this exercise's history.", () => document.getElementById('exercise-search').dispatchEvent(new Event('change')));
+      }
+    });
+
+    function renderExerciseHistory(container, name, performances) {
+      container.innerHTML = '';
+      if (performances.length === 0) {
+        showEmpty(container, 'No previous performance recorded for this exercise.');
+        return;
+      }
+      container.appendChild(el('h3', { text: name }));
+      for (const perf of performances) {
+        const card = createCard();
+        card.appendChild(el('div', { class: 'card-subtitle', text: formatDate(perf.date) }));
+        const table = el('table');
+        const head = el('tr');
+        for (const h of ['Set', 'Weight', 'Reps', 'Done']) head.appendChild(el('th', { text: h }));
+        table.appendChild(head);
+        for (const s of perf.sets) {
+          const row = el('tr');
+          row.appendChild(el('td', { text: String(s.set_number) }));
+          row.appendChild(el('td', { text: s.weight ?? '—' }));
+          row.appendChild(el('td', { text: s.reps ?? '—' }));
+          row.appendChild(el('td', { text: s.completed ? 'Yes' : 'No' }));
+          table.appendChild(row);
+        }
+        card.appendChild(table);
+        container.appendChild(card);
+      }
+    }
+
+    // ---------- Goal progress ----------
+
+    async function loadGoalProgress() {
+      const container = document.getElementById('goal-progress-container');
+      showLoading(container, 'Loading goal progress…');
+      try {
+        const [goals, week, aestheticBlueprint] = await Promise.all([
+          api('/api/goals?active=true'),
+          api('/api/programming/week'),
+          api('/api/blueprint/aesthetic-goals'),
+        ]);
+        const namesByRef = new Map(aestheticBlueprint.map((g) => [g.id, g.display_name || g.name]));
+        renderGoalProgress(container, goals, week, namesByRef);
+      } catch (err) {
+        showError(container, "We couldn't load goal progress.", loadGoalProgress);
+      }
+    }
+
+    function renderGoalProgress(container, goals, week, namesByRef) {
+      container.innerHTML = '';
+      const aestheticGoals = goals.filter((g) => g.goal_type === 'aesthetic').sort((a, b) => a.priority - b.priority);
+      if (aestheticGoals.length === 0) {
+        showEmpty(container, 'Not enough history yet.');
+        return;
+      }
+      for (let i = 0; i < aestheticGoals.length; i++) {
+        const goal = aestheticGoals[i];
+        const allocations = week.targetAllocations.filter((a) => a.goal_id === goal.id);
+        const card = createCard();
+        card.appendChild(el('div', { class: 'card-title', text: `Goal ${i + 1} — ${namesByRef.get(goal.blueprint_ref) || goal.blueprint_ref}` }));
+        if (allocations.length === 0) {
+          card.appendChild(el('p', { class: 'muted', text: 'Not enough history yet.' }));
+        } else {
+          // Final Surgical Fix Pass §13-16: same programming concept as
+          // the Program page — required/programmed/unmet, never a claim
+          // about actual physical completion (that's the Logger's own
+          // Planned-vs-Actual display).
+          const required = allocations.reduce((sum, a) => sum + a.requiredDirectSets, 0);
+          const programmed = allocations.reduce((sum, a) => sum + a.deliveredDirectSets, 0);
+          const unmet = allocations.reduce((sum, a) => sum + a.unmetDirectSets, 0);
+          card.appendChild(el('p', { text: `Required: ${required} · Programmed: ${programmed}${unmet > 0 ? ` · Unmet: ${unmet}` : ''}` }));
+        }
+        container.appendChild(card);
+      }
+    }
+
+    loadRecent();
+    loadExerciseOptions();
+    loadGoalProgress();
+  </script>
+</body>
+</html>

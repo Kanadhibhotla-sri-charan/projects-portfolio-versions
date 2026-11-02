@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head><link rel="stylesheet" href="demo-bar.css"><script src="demo-data.js"></script><script src="demo-shim.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Today - Workout Programmer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body><div id="demo-bar"><span class="lg">Workout Programmer · read-only demo with sample data</span><span class="sm">Demo · sample data</span><a href="../../index.html"><span class="lg">← Back to portfolio</span><span class="sm">← Portfolio</span></a></div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header id="app-header" class="app-header"></header>
+
+  <main id="main-content">
+    <h1>Today</h1>
+    <div id="today-container"></div>
+
+    <section>
+      <h2>Training volume</h2>
+      <p class="muted">Sets this week toward each muscle's Blueprint number: goal muscles at priority, the rest at efficient. A set counts toward every muscle it trains, at Blueprint's credit for that exercise. Goal muscles count only exercises that train them directly (no credit from presses or rows).</p>
+      <div id="volume-container"></div>
+    </section>
+
+    <section>
+      <h2>Log something else</h2>
+      <p class="muted">For an activity outside today's generated plan (e.g. an unplanned badminton session).</p>
+      <form id="other-session-form">
+        <label>Session type
+          <select id="other-session-type">
+            <option value="badminton">Badminton</option>
+            <option value="gym">Gym</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>Notes
+          <input id="other-session-notes" type="text" />
+        </label>
+        <div class="btn-row">
+          <button type="submit">Start</button>
+        </div>
+        <div id="other-session-status"></div>
+      </form>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+  <script>
+    renderAppHeader('today.html');
+
+    let todayData = null;
+
+    async function load() {
+      const container = document.getElementById('today-container');
+      showLoading(container, "Loading today's program…");
+      try {
+        todayData = await api('/api/programming/today');
+        render();
+      } catch (err) {
+        showError(container, "We couldn't load today's program.", load);
+      }
+    }
+
+    function render() {
+      const container = document.getElementById('today-container');
+      container.innerHTML = '';
+
+      const headCard = el('div', { class: 'card' });
+      headCard.appendChild(el('div', { class: 'card-subtitle', text: formatDate(todayData.date, { weekday: 'long' }) }));
+      const titleText = todayData.exercises.length > 0 || todayData.sessionPurpose ? formatSessionType(todayData.sessionPurpose || 'gym') : formatSessionType(todayData.sessionType);
+      headCard.appendChild(el('h2', { text: titleText, style: 'margin:0.15rem 0 0' }));
+
+      const goal = (todayData.activeGoals || [])[0];
+      if (goal) {
+        headCard.appendChild(el('p', { class: 'muted', text: `Today's focus: your #${goal.priority} priority goal`, style: 'margin-top:0.5rem' }));
+      }
+      container.appendChild(headCard);
+
+      if (todayData.exercises.length > 0) {
+        const why = el('div', { class: 'card' });
+        why.appendChild(el('div', { class: 'card-title', text: 'Why this workout?' }));
+        why.appendChild(el('p', { text: describeWork(todayData.exercises[0]), style: 'margin:0.3rem 0 0' }));
+        container.appendChild(why);
+      }
+
+      // Fix 8: a Gym day created via an AI proposal replacement has a
+      // real planned session but no deterministic `exercises` to show
+      // here — "No exercises were placed" would wrongly suggest nothing
+      // is scheduled when "Today's session" (below) already links to a
+      // real planned workout.
+      if (todayData.sessionType !== 'gym') {
+        showEmptyInline(container, `No gym session planned today — ${formatSessionType(todayData.sessionType).toLowerCase()} day.`);
+      } else if (todayData.exercises.length === 0 && todayData.selectionConflict) {
+        showEmptyInline(container, "Today's workout selection is ambiguous — see below before starting or continuing anything.");
+      } else if (todayData.exercises.length === 0 && (todayData.historicalSession || todayData.selectedPlannedWorkout)) {
+        showEmptyInline(container, "This workout was created from an AI proposal — open it below to see the planned exercises.");
+      } else if (todayData.exercises.length === 0) {
+        showEmptyInline(container, 'No exercises were placed for today. Check your training profile and goals on the Program page for details.');
+      } else {
+        for (const ex of todayData.exercises) container.appendChild(buildExerciseCard(ex));
+        container.appendChild(el('p', { class: 'muted', text: `Planned duration: ${formatDuration(todayData.estimatedMinutes)}` }));
+      }
+
+      renderSessionStatus(container);
+    }
+
+    function showEmptyInline(container, message) {
+      container.appendChild(el('div', { class: 'state-block' }, [el('p', { text: message })]));
+    }
+
+    function buildExerciseCard(item) {
+      const card = createCard();
+      card.classList.add('exercise-card');
+      const header = el('div', { class: 'exercise-header' });
+      const left = el('div');
+      left.appendChild(el('div', { class: 'exercise-name', text: item.exercise_name }));
+      left.appendChild(el('div', { class: 'exercise-targets', text: item.target_name }));
+      header.appendChild(left);
+      header.appendChild(el('div', { class: 'exercise-prescription', text: formatSets(item.target_sets, item.target_reps_min, item.target_reps_max) }));
+      card.appendChild(header);
+
+      const explain = el('details', { class: 'exercise-explanation' });
+      explain.appendChild(el('summary', { text: 'Why this exercise' }));
+      explain.appendChild(el('p', { text: item.friendly_reasoning || item.reasoning, style: 'margin:0.4rem 0 0' }));
+      card.appendChild(explain);
+      return card;
+    }
+
+    function renderSessionStatus(container) {
+      const section = el('section');
+      section.appendChild(el('h2', { text: "Today's session" }));
+
+      const relevant = (todayData.loggedSessions || []).filter((s) => todayData.sessionType !== 'gym' || s.session_type !== 'badminton');
+      // Final Actionable vs Historical Session Resolution Fixes §10: a
+      // completed/in-progress session (`historicalSession`) and an
+      // actionable one (`selectedPlannedWorkout`) are DIFFERENT server
+      // fields now, never conflated into one ambiguous "the gym
+      // session." Whichever is present is looked up by its exact id in
+      // `loggedSessions` for display fields only (duration_minutes etc.)
+      // — never an unqualified `.find()` by type/recency; identity
+      // always comes from the server-resolved id. A `selectionConflict`
+      // is checked first and, when present, shows a recovery/error
+      // state instead of opening any session at all — never guess which
+      // of several ambiguous sessions the user meant.
+      const findByResolvedId = (ref) => (ref ? todayData.loggedSessions.find((s) => s.session_id === ref.id) : null);
+      const historicalSession = findByResolvedId(todayData.historicalSession);
+      const actionableSession = findByResolvedId(todayData.selectedPlannedWorkout);
+
+      if (todayData.selectionConflict) {
+        const card = createCard([
+          el('div', { class: 'card-row' }, [el('div', { text: 'Today’s workout state is ambiguous' })]),
+          el('p', { class: 'muted', text: todayData.selectionConflict.message }),
+        ]);
+        section.appendChild(card);
+        section.appendChild(el('p', { class: 'muted', text: 'Open Program to review this day before starting or continuing a workout.' }));
+      } else if (historicalSession) {
+        const card = createCard([
+          el('div', { class: 'card-row' }, [
+            el('div', { text: `${formatSessionType(historicalSession.session_type)} — ${historicalSession.duration_minutes ? formatDuration(historicalSession.duration_minutes) : 'in progress'}` }),
+            createStatusBadge(historicalSession.status, formatSessionType(historicalSession.status)),
+          ]),
+        ]);
+        section.appendChild(card);
+        const cta = createButton({
+          label: historicalSession.status === 'completed' ? 'View workout' : 'Continue workout',
+          onClick: () => (window.location.href = `logger.html?session=${historicalSession.session_id}`),
+        });
+        section.appendChild(cta);
+      } else if (actionableSession) {
+        const card = createCard([
+          el('div', { class: 'card-row' }, [
+            el('div', { text: `${formatSessionType(actionableSession.session_type)} — ${actionableSession.duration_minutes ? formatDuration(actionableSession.duration_minutes) : 'not started'}` }),
+            createStatusBadge(actionableSession.status, formatSessionType(actionableSession.status)),
+          ]),
+        ]);
+        section.appendChild(card);
+        const cta = createButton({
+          label: 'Continue workout',
+          onClick: () => (window.location.href = `logger.html?session=${actionableSession.session_id}`),
+        });
+        section.appendChild(cta);
+      } else if (todayData.sessionType === 'gym' && todayData.exercises.length > 0) {
+        const cta = createButton({ label: 'Start workout', onClick: startGeneratedWorkout });
+        section.appendChild(cta);
+      } else {
+        section.appendChild(el('p', { class: 'muted', text: 'No gym workout logged for today yet.' }));
+      }
+
+      for (const s of todayData.loggedSessions) {
+        if (s.session_type === 'gym') continue;
+        const card = createCard([
+          el('div', { class: 'card-row' }, [
+            el('div', { text: formatSessionType(s.session_type) }),
+            createStatusBadge(s.status, formatSessionType(s.status)),
+          ]),
+          el('a', { href: `logger.html?session=${s.session_id}`, text: 'Open' }),
+        ]);
+        section.appendChild(card);
+      }
+
+      container.appendChild(section);
+    }
+
+    let startInFlight = false;
+    async function startGeneratedWorkout(e) {
+      if (startInFlight) return;
+      startInFlight = true;
+      e.target.disabled = true;
+      try {
+        const goal = (todayData.activeGoals || [])[0];
+        const session = await api('/api/workouts', {
+          method: 'POST',
+          body: {
+            date: todayData.date,
+            session_type: 'gym',
+            status: 'in_progress',
+            goal_context: goal ? { goal_type: goal.goal_type, goal_id: goal.goal_id, priority: goal.priority, program_phase: null } : null,
+            source_type: 'deterministic', // starting the day's own generated plan
+          },
+        });
+        window.location.href = `logger.html?session=${session.session_id}`;
+      } catch (err) {
+        e.target.disabled = false;
+        startInFlight = false;
+        showInlineStatus(document.getElementById('today-container'), 'error', err.message);
+      }
+    }
+
+    document.getElementById('other-session-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const button = e.target.querySelector('button[type="submit"]');
+      const statusEl = document.getElementById('other-session-status');
+      try {
+        const session = await withSaving(button, statusEl, () =>
+          api('/api/workouts', {
+            method: 'POST',
+            body: {
+              date: todayIso(),
+              session_type: document.getElementById('other-session-type').value,
+              status: 'in_progress',
+              notes: document.getElementById('other-session-notes').value || null,
+              source_type: 'manual', // outside the generated plan
+            },
+          })
+        );
+        window.location.href = `logger.html?session=${session.session_id}`;
+      } catch (err) {
+        // entered values are preserved (spec §61) — form is left as-is
+      }
+    });
+
+    // ---------- Training volume (weekly volume ledger) ----------
+
+    async function loadVolume() {
+      const container = document.getElementById('volume-container');
+      showLoading(container, 'Loading training volume…');
+      try {
+        renderVolume(container, await api('/api/insights/volume'));
+      } catch (err) {
+        showError(container, "We couldn't load training volume.", loadVolume);
+      }
+    }
+
+    const fmtSets = (n) => (Math.round(n * 10) / 10).toString();
+
+    function volumeRow(m) {
+      const pct = m.number > 0 ? Math.min(100, (m.done / m.number) * 100) : 0;
+      const state = m.done >= m.number ? 'is-done' : m.behind > 0.25 && !m.indirect ? 'is-behind' : '';
+      const meta = m.shareOf
+        ? `at least this share of ${m.shareOf.replace(/-/g, ' ')}`
+        : m.indirect ? 'covered by compound lifts' : `this week · day ${m.weekDay} of 7`;
+      return el('div', { class: `vol-row ${state}` }, [
+        el('div', { class: 'vol-head' }, [
+          el('span', { class: 'vol-name', text: m.name }),
+          el('span', { class: 'vol-num' }, [el('strong', { text: fmtSets(m.done) }), el('span', { text: ` / ${fmtSets(m.number)}` })]),
+        ]),
+        el('div', { class: 'vol-track' }, [el('div', { class: 'vol-fill', style: `width:${pct}%` })]),
+        el('div', { class: 'vol-meta', text: meta }),
+      ]);
+    }
+
+    function renderVolume(container, data) {
+      container.innerHTML = '';
+      // A share row (e.g. long head) sits right under its parent muscle.
+      const goalParents = data.muscles.filter((m) => m.isGoal && !m.shareOf);
+      const goals = goalParents.flatMap((p) => [p, ...data.muscles.filter((m) => m.shareOf === p.targetId)]);
+      const others = data.muscles
+        .filter((m) => !m.isGoal && !m.shareOf)
+        .sort((a, b) => b.behind - a.behind)
+        .flatMap((p) => [p, ...data.muscles.filter((m) => m.shareOf === p.targetId)]);
+      if (goals.length > 0) {
+        const whole = goals.filter((m) => !m.shareOf);
+        const done = whole.reduce((s, m) => s + Math.min(m.done, m.number), 0);
+        const total = whole.reduce((s, m) => s + m.number, 0);
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        const card = el('div', { class: 'card vol-card is-goal' });
+        card.appendChild(el('div', { class: 'vol-card-head' }, [
+          el('div', {}, [el('div', { class: 'vol-kicker', text: 'Goal muscles' }), el('div', { class: 'vol-title', text: 'This week' })]),
+          el('div', { class: 'vol-ring', style: `--p:${pct}`, 'aria-label': `${pct}% of this week's goal volume` }, [el('span', { text: `${pct}%` })]),
+        ]));
+        for (const m of goals) card.appendChild(volumeRow(m));
+        container.appendChild(card);
+      }
+      if (others.length > 0) {
+        const card = el('div', { class: 'card vol-card' });
+        card.appendChild(el('div', { class: 'vol-card-head' }, [
+          el('div', {}, [el('div', { class: 'vol-kicker', text: 'Other muscles' }), el('div', { class: 'vol-title', text: 'This week' })]),
+        ]));
+        const grid = el('div', { class: 'vol-grid' });
+        for (const m of others) grid.appendChild(volumeRow(m));
+        card.appendChild(grid);
+        container.appendChild(card);
+      }
+      // Flexibility (2026-10-28): Blueprint's weekly stretching minutes.
+      const flex = data.flexibility || [];
+      if (flex.length > 0) {
+        const card = el('div', { class: 'card vol-card' });
+        card.appendChild(el('div', { class: 'vol-card-head' }, [
+          el('div', {}, [el('div', { class: 'vol-kicker', text: 'Flexibility' }), el('div', { class: 'vol-title', text: 'Minutes this week' })]),
+        ]));
+        const grid = el('div', { class: 'vol-grid' });
+        for (const g of flex) {
+          const pct = g.weeklyMinutes > 0 ? Math.min(100, (g.doneMinutes / g.weeklyMinutes) * 100) : 0;
+          grid.appendChild(el('div', { class: `vol-row ${g.doneMinutes >= g.weeklyMinutes ? 'is-done' : ''}` }, [
+            el('div', { class: 'vol-head' }, [
+              el('span', { class: 'vol-name', text: g.name }),
+              el('span', { class: 'vol-num' }, [el('strong', { text: fmtSets(g.doneMinutes) }), el('span', { text: ` / ${g.weeklyMinutes} min` })]),
+            ]),
+            el('div', { class: 'vol-track' }, [el('div', { class: 'vol-fill', style: `width:${pct}%` })]),
+            el('div', { class: 'vol-meta', text: 'stretches added to each gym session' }),
+          ]));
+        }
+        card.appendChild(grid);
+        container.appendChild(card);
+      }
+      if (goals.length === 0 && others.length === 0 && flex.length === 0) showEmpty(container, 'No muscle volume to show yet.');
+    }
+
+    load();
+    loadVolume();
+  </script>
+</body>
+</html>

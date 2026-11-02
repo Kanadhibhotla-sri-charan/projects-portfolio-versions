@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head><link rel="stylesheet" href="demo-bar.css"><script src="demo-data.js"></script><script src="demo-shim.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Coaching - Workout Programmer</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .review-list { margin: 0.3rem 0 0.8rem; padding-left: 1.2rem; }
+    .review-list li { margin: 0.25rem 0; }
+    .advice-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+  </style>
+</head>
+<body><div id="demo-bar"><span class="lg">Workout Programmer · read-only demo with sample data</span><span class="sm">Demo · sample data</span><a href="../../index.html"><span class="lg">← Back to portfolio</span><span class="sm">← Portfolio</span></a></div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header id="app-header" class="app-header"></header>
+
+  <main id="main-content">
+    <h1>Coaching</h1>
+    <p class="muted">Your coach's read of the last few weeks, and what to change. Written from the same numbers as the Insights page.</p>
+
+    <section>
+      <h2>Weekly review</h2>
+      <div id="review-section"></div>
+    </section>
+
+    <section>
+      <h2>Plateau advice</h2>
+      <p class="faint">Accepted advice is used when your next workouts are generated. Accepting a swap also avoids the old exercise and prefers the new one for 14 days (see Profile → Training settings).</p>
+      <div id="advice-section"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+  <script>
+    renderAppHeader('coaching.html');
+
+    let state = null;
+
+    async function loadReview() {
+      showLoading(document.getElementById('review-section'), 'Loading your review…');
+      showLoading(document.getElementById('advice-section'), 'Loading…');
+      try {
+        state = await api('/api/coaching/review');
+        render();
+      } catch (err) {
+        showError(document.getElementById('review-section'), 'We could not load your coach review.', loadReview);
+        document.getElementById('advice-section').innerHTML = '';
+      }
+    }
+
+    function list(title, items) {
+      if (!items || items.length === 0) return [];
+      return [el('div', { class: 'card-subtitle', text: title, style: 'margin-top:0.6rem' }), el('ul', { class: 'review-list' }, items.map((t) => el('li', { text: t })))];
+    }
+
+    function render() {
+      const container = document.getElementById('review-section');
+      container.innerHTML = '';
+      const statusEl = el('div');
+      const generate = (regenerate) => createButton({
+        label: regenerate ? 'Write a new review' : "Write this week's review",
+        variant: regenerate ? 'secondary' : 'primary',
+        onClick: async () => {
+          btn.disabled = true;
+          showInlineStatus(statusEl, 'saving', 'Your coach is writing the review (about 20 seconds)…');
+          try {
+            await api('/api/coaching/review', { method: 'POST', body: regenerate ? { regenerate: true } : {} });
+            await loadReview();
+          } catch (err) {
+            showInlineStatus(statusEl, 'error', (err.body && err.body.message) || 'The review could not be written. Try again.');
+            btn.disabled = false;
+          }
+        },
+      });
+      const review = state.review;
+      const btn = generate(Boolean(state.thisWeekHasReview));
+      if (!review) {
+        const card = createCard();
+        card.appendChild(el('p', { class: 'muted', style: 'margin:0', text: 'No review yet. Your coach looks at strength per exercise, weekly volume against what each muscle needs, consistency, deloads, your notes and injury pauses, then tells you what went well, what needs attention and what to focus on this week. One AI call.' }));
+        if (state.aiEnabled) card.append(el('div', { class: 'btn-row', style: 'margin-top:0.6rem' }, [btn]), statusEl);
+        container.appendChild(card);
+      } else {
+        const card = createCard();
+        card.appendChild(el('div', { class: 'card-title', text: review.review.headline }));
+        card.appendChild(el('div', { class: 'faint', text: `Written ${formatDate(review.asOf)}` }));
+        for (const node of [
+          ...list('What went well', review.review.wentWell),
+          ...list('Needs attention', review.review.needsAttention),
+          ...list('Focus this week', review.review.focusThisWeek),
+        ]) card.appendChild(node);
+        card.appendChild(el('div', { class: 'card-subtitle', text: 'Recovery', style: 'margin-top:0.6rem' }));
+        card.appendChild(el('p', { style: 'margin:0.3rem 0 0', text: review.review.recovery }));
+        if (state.aiEnabled) card.append(el('div', { class: 'btn-row', style: 'margin-top:0.8rem' }, [btn]), statusEl);
+        container.appendChild(card);
+      }
+      renderAdvice(review ? review.advice : []);
+    }
+
+    const ADVICE_KIND = { rep_range: 'Rep range', load: 'Load', swap: 'Swap', technique: 'Technique', volume: 'Volume' };
+    const ADVICE_STATUS = { accepted: ['badge-success', 'Accepted'], dismissed: ['badge-neutral', 'Dismissed'] };
+
+    function renderAdvice(advice) {
+      const container = document.getElementById('advice-section');
+      container.innerHTML = '';
+      if (!advice || advice.length === 0) {
+        showEmpty(container, 'No plateau advice. Advice appears here when an exercise has stalled or is dropping.');
+        return;
+      }
+      for (const a of advice) {
+        const card = createCard();
+        const row = el('div', { class: 'advice-row' });
+        row.appendChild(el('div', { class: 'card-title', text: a.exerciseName }));
+        row.appendChild(el('span', { class: 'badge badge-progress', text: ADVICE_KIND[a.kind] || a.kind }));
+        card.appendChild(row);
+        card.appendChild(el('p', { class: 'muted', style: 'margin:0.3rem 0', text: a.observation }));
+        card.appendChild(el('p', { style: 'margin:0 0 0.3rem', text: a.swapToExerciseName ? `${a.suggestion} (switch to ${a.swapToExerciseName})` : a.suggestion }));
+        if (a.status === 'open') {
+          const statusEl = el('div');
+          const decide = (decision) => async () => {
+            try {
+              const r = await api(`/api/coaching/advice/${encodeURIComponent(a.id)}`, { method: 'POST', body: { decision } });
+              Object.assign(a, r.advice);
+              renderAdvice(advice);
+            } catch (err) {
+              showInlineStatus(statusEl, 'error', err.message || 'Could not save.');
+            }
+          };
+          card.append(el('div', { class: 'btn-row' }, [
+            createButton({ label: 'Accept', variant: 'primary', onClick: decide('accept') }),
+            createButton({ label: 'Dismiss', variant: 'secondary', onClick: decide('dismiss') }),
+          ]), statusEl);
+        } else {
+          const [cls, label] = ADVICE_STATUS[a.status];
+          card.appendChild(el('span', { class: `badge ${cls}`, text: a.decidedOn ? `${label} ${formatDate(a.decidedOn)}` : label }));
+        }
+        container.appendChild(card);
+      }
+    }
+
+    loadReview();
+  </script>
+</body>
+</html>

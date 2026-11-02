@@ -1,0 +1,1156 @@
+<!doctype html>
+<html lang="en">
+<head><link rel="stylesheet" href="demo-bar.css"><script src="demo-data.js"></script><script src="demo-shim.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Logger - Workout Programmer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body><div id="demo-bar"><span class="lg">Workout Programmer · read-only demo with sample data</span><span class="sm">Demo · sample data</span><a href="../../index.html"><span class="lg">← Back to portfolio</span><span class="sm">← Portfolio</span></a></div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header id="app-header" class="app-header"></header>
+
+  <main id="main-content">
+    <div id="logger-root"></div>
+  </main>
+  <div id="day-modal-root"></div>
+
+  <script src="app.js"></script>
+  <script>
+    renderAppHeader(null); // logger is a dedicated execution screen, not a nav destination
+    const sessionId = new URLSearchParams(window.location.search).get('session');
+
+    let session = null; // GET /api/workouts/:id result
+    let generated = null; // GET /api/programming/today?date=session.date result (gym sessions only)
+    let skippedExerciseIds = new Set(); // locally tracked — no persisted "skipped" concept at the exercise level
+    let substitutions = new Map(); // generated exercise_id -> {id, name} chosen substitute
+    // Final Copy/Explanation Fixes §1: a persisted, id-keyed exercise
+    // name lookup (Blueprint + approved outside-Blueprint) — the
+    // reliable identity-resolution mechanism a PERFORMED exercise's
+    // name must go through, since it must resolve correctly even when
+    // it's a substitute the transient `substitutions` Map above no
+    // longer knows about (page reload, reopened session, app restart).
+    // Never depends on `generated`/`substitutions` as the only source.
+    let exerciseNamesById = new Map();
+    // Athletic drills (2026-10-18): Blueprint mode prescription per drill id.
+    let drillById = new Map();
+    let dirty = false; // unsaved set values entered but not yet saved (spec §62)
+    // Overview (2026-10-30, owner: too much scrolling in the gym; the
+    // listed order is not the order exercises are done in): every exercise
+    // is a one-line row, opened by a tap; a pinned progress strip jumps to
+    // any of them. Open rows and unsaved set entries survive re-renders.
+    const openKeys = new Set();
+    const drafts = new Map(); // card key -> set-editor state ({ sets, unit, noRir, dirty })
+    let lastSavedExerciseId = null;
+    const anyDraftDirty = () => [...drafts.values()].some((d) => d.dirty);
+
+    window.addEventListener('beforeunload', (e) => {
+      if (dirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    async function load() {
+      const root = document.getElementById('logger-root');
+      if (!sessionId) {
+        root.innerHTML = '';
+        root.appendChild(el('div', { class: 'state-block' }, [
+          el('p', { text: 'No session selected.' }),
+          el('a', { class: 'btn', href: 'today.html', text: 'Back to Today' }),
+        ]));
+        return;
+      }
+      showLoading(root, 'Loading session…');
+      try {
+        session = await api(`/api/workouts/${sessionId}`);
+        if (session.session_type === 'gym') {
+          generated = await api(`/api/programming/today?date=${session.date}`).catch(() => null);
+          await loadExerciseNames();
+        }
+        render();
+      } catch (err) {
+        showError(root, "We couldn't load this workout.", load);
+      }
+    }
+
+    // Final Copy/Explanation Fixes §1: fetched once per page load, from
+    // the same two real, persisted exercise catalogs the app already
+    // exposes (Blueprint's own library + approved outside-Blueprint
+    // proposals) — never from the current session's transient
+    // substitution state. A fetch failure leaves the map empty; name
+    // resolution then falls back to the generated program's own name,
+    // or the raw id as a last resort (unchanged from before this fix).
+    // How each logged exercise was done (2026-10-11), on every exercise card:
+    // equipment (one Blueprint exercise can be done with a barbell,
+    // dumbbells, a cable...), attachment (rope, V-bar...) and what the set
+    // count measures (reps, steps, seconds, metres). Progress is only
+    // compared within the same equipment, attachment and unit. Attachment
+    // and unit are universal: every exercise offers every choice.
+    let exerciseEquipmentById = new Map();
+    const EQUIPMENT_CHOICES = ['barbell', 'dumbbell', 'ez-bar', 'cable', 'machine', 'smith machine', 'kettlebell', 'band', 'bodyweight', 'other'];
+    // Mirrors src/contracts/loggingOptions.ts (tests/logging/logOptions.test.ts checks).
+    const ATTACHMENT_CHOICES = ['straight bar', 'ez-bar', 'v-bar', 'rope', 'single handle', 'lat bar', 'close-grip handle', 'neutral-grip handle', 'ankle strap', 'band', 'belt', 'other'];
+    const REP_UNITS = ['reps', 'steps', 'seconds', 'metres'];
+    const repUnitOf = (perf) => (perf && REP_UNITS.includes(perf.rep_unit) ? perf.rep_unit : 'reps');
+
+    function buildLogOptionSelect(perf, field, label, choices, emptyText, onSaved) {
+      const current = perf[field] ?? null;
+      const all = current && !choices.includes(current) ? [current, ...choices] : choices;
+      const select = el('select', { 'aria-label': label, style: 'width:auto;margin:0' }, [
+        ...(emptyText ? [el('option', { value: '', text: emptyText })] : []),
+        ...all.map((c) => el('option', { value: c, text: capitalize(c), ...((current ?? (emptyText ? '' : all[0])) === c ? { selected: 'selected' } : {}) })),
+      ]);
+      const statusEl = el('span', { class: 'faint' });
+      select.addEventListener('change', async () => {
+        statusEl.textContent = 'Saving…';
+        const value = select.value || null;
+        try {
+          await api(`/api/workouts/${sessionId}/exercises/${perf.id}`, { method: 'PATCH', body: { [field]: value } });
+          perf[field] = value;
+          statusEl.textContent = 'Saved';
+          if (onSaved) onSaved();
+        } catch (err) {
+          select.value = perf[field] || (emptyText ? '' : all[0]);
+          statusEl.textContent = err.message || 'Could not save';
+        }
+      });
+      return el('label', { style: 'display:flex;align-items:center;gap:0.4rem;margin:0' }, [el('span', { class: 'faint', text: label }), select, statusEl]);
+    }
+
+    function buildLogOptionsPicker(perf, onUnitChange) {
+      const listed = (exerciseEquipmentById.get(perf.exercise_id) || []).filter((e) => EQUIPMENT_CHOICES.includes(e));
+      const equipmentChoices = [...listed, ...EQUIPMENT_CHOICES.filter((e) => !listed.includes(e))];
+      return el('div', { class: 'log-options', style: 'display:flex;align-items:center;gap:0.4rem 1rem;margin:0.3rem 0 0.5rem;flex-wrap:wrap' }, [
+        buildLogOptionSelect(perf, 'equipment', 'Equipment', equipmentChoices, 'Not specified'),
+        buildLogOptionSelect(perf, 'attachment', 'Attachment', ATTACHMENT_CHOICES, 'None'),
+        buildLogOptionSelect(perf, 'rep_unit', 'Count', REP_UNITS, null, onUnitChange),
+      ]);
+    }
+
+    async function loadExerciseNames() {
+      try {
+        const [blueprintExercises, outsideExercises] = await Promise.all([
+          api('/api/blueprint/exercises'),
+          api('/api/outside-blueprint-exercises').catch(() => []),
+        ]);
+        exerciseNamesById = new Map([...blueprintExercises, ...outsideExercises].map((e) => [e.id, e.name]));
+        exerciseEquipmentById = new Map(blueprintExercises.map((e) => [e.id, e.equipment || []]));
+        drillById = new Map(blueprintExercises.filter((e) => e.drill).map((e) => [e.id, e.drill]));
+      } catch (err) {
+        exerciseNamesById = new Map();
+      }
+    }
+
+    function render() {
+      const root = document.getElementById('logger-root');
+      const scrollY = window.scrollY;
+      root.innerHTML = '';
+      const header = buildHeader();
+      root.appendChild(header);
+
+      if (session.session_type === 'badminton') {
+        root.appendChild(buildBadmintonSection());
+      } else {
+        const overview = [];
+        root.appendChild(buildExerciseSection(overview));
+        // Only the strip stays pinned; the title scrolls away.
+        if (overview.length > 0) {
+          header.classList.add('has-strip');
+          header.after(buildProgressStrip(overview));
+        }
+        if (session.status !== 'completed') root.appendChild(buildAddExerciseSection());
+        // Badminton already has its own per-session notes field within
+        // its own details form — this general session note is added
+        // only for gym sessions to avoid a confusing duplicate field.
+        root.appendChild(buildSessionNoteSection());
+      }
+
+      if (session.status !== 'completed') {
+        const finish = buildFinishBar();
+        // With one-line rows the end of the list is close: no pinned bar
+        // taking a quarter of the phone screen.
+        if (root.querySelector('.progress-strip')) finish.classList.add('is-static');
+        root.appendChild(finish);
+      }
+      else root.appendChild(buildCompletedFooter());
+
+      // Rebuilding the page must not move you: stay where you were, and
+      // keep a just-saved exercise's row in view.
+      window.scrollTo(0, scrollY);
+      if (lastSavedExerciseId) {
+        const saved = root.querySelector(`[data-exercise-id="${CSS.escape(lastSavedExerciseId)}"]`);
+        lastSavedExerciseId = null;
+        if (saved) scrollToCard(saved, true);
+      }
+    }
+
+    // ---------- Overview: one-line rows, progress strip ----------
+
+    const STATUS_ICON = { done: '✓', editing: '●', pending: '', skipped: '–' };
+
+    /** Leading drills are the warm-up and drills after the last lift come
+     * after the session (flexibility cool-down, athletic add-on); a session
+     * without both drills and lifts is one list. */
+    function sectionsOf(exerciseIds) {
+      const lifts = exerciseIds.map((id) => !drillById.has(id));
+      const first = lifts.indexOf(true);
+      const last = lifts.lastIndexOf(true);
+      if (first === -1 || lifts.every(Boolean)) return exerciseIds.map(() => 'main');
+      return exerciseIds.map((_, i) => (i < first ? 'warmup' : i > last ? 'after' : 'main'));
+    }
+    const SECTION_LABELS = { warmup: 'Warm-up', main: 'Main session', after: 'After the session' };
+
+    function shortSetText(sets, unit) {
+      const done = sets.filter((s) => s.completed);
+      if (done.length === 0) return 'Nothing logged';
+      const last = done[done.length - 1];
+      const amount = last.reps != null ? `${last.reps}${unit === 'seconds' ? ' s' : unit === 'reps' ? '' : ` ${unit}`}` : '—';
+      return `${done.length} set${done.length === 1 ? '' : 's'} · ${last.weight ? `${last.weight} kg × ` : ''}${amount}`;
+    }
+
+    // Load hint (2026-10-30): last time's heaviest set and what to try
+    // today, from GET /api/workouts/:id (src/engine/loadHint.ts).
+    const loadHintOf = (perf) => (session.status !== 'completed' && !drillById.has(perf.exercise_id) && session.load_hints ? session.load_hints[perf.id] || null : null);
+    function loadHintShort(perf) {
+      const h = loadHintOf(perf);
+      if (!h) return '';
+      return h.kind === 'heavier' ? ` · ↑ ${h.weight} kg` : ` · ${h.weight} kg × ${h.reps}`;
+    }
+
+    /** Wraps a full exercise card into a row that opens on tap. */
+    function makeCollapsible(card, item) {
+      card.dataset.key = item.key;
+      card.dataset.exerciseId = item.exerciseId;
+      card.classList.add('ex-collapsible', `ex-${item.status}`);
+      const body = el('div', { class: 'ex-body', id: `ex-body-${item.key}` });
+      while (card.firstChild) body.appendChild(card.firstChild);
+      // The name moves to the row; the rest of the header stays in the body.
+      const nameInBody = body.querySelector('.exercise-header .exercise-name') || body.querySelector(':scope > .exercise-name');
+      if (nameInBody) nameInBody.remove();
+      const summary = el('button', { type: 'button', class: 'ex-summary', 'aria-controls': body.id, 'aria-expanded': 'false' }, [
+        el('span', { class: 'ex-status', 'aria-hidden': 'true', text: STATUS_ICON[item.status] }),
+        el('span', { class: 'ex-sum-text' }, [
+          el('span', { class: 'ex-sum-name', text: item.name }),
+          el('span', { class: 'ex-sum-detail', text: item.detail }),
+        ]),
+        el('span', { class: 'ex-chevron', 'aria-hidden': 'true' }),
+      ]);
+      summary.addEventListener('click', () => setCardOpen(card, !card.classList.contains('is-open')));
+      card.prepend(summary);
+      card.appendChild(body);
+      setCardOpen(card, openKeys.has(item.key));
+      return card;
+    }
+
+    function setCardOpen(card, open) {
+      card.classList.toggle('is-open', open);
+      card.querySelector('.ex-summary').setAttribute('aria-expanded', String(open));
+      if (open) openKeys.add(card.dataset.key);
+      else openKeys.delete(card.dataset.key);
+    }
+
+    /** Scrolls a card to just under the pinned headers (only when out of view, if `ifNeeded`). */
+    function scrollToCard(card, ifNeeded) {
+      const pinned = (document.getElementById('app-header')?.offsetHeight || 0) + (document.querySelector('.progress-strip')?.offsetHeight || 0);
+      const top = card.getBoundingClientRect().top;
+      if (ifNeeded && top >= pinned && top < window.innerHeight - 120) return;
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      window.scrollTo({ top: top + window.scrollY - pinned - 8, behavior: reduce ? 'auto' : 'smooth' });
+    }
+
+    /** A card's unsaved entries: mark its row and chip without re-rendering. */
+    function markEditing(key) {
+      const card = document.querySelector(`.ex-collapsible[data-key="${CSS.escape(key)}"]`);
+      if (card && !card.classList.contains('ex-editing')) {
+        card.classList.remove('ex-pending', 'ex-done');
+        card.classList.add('ex-editing');
+        card.querySelector('.ex-status').textContent = STATUS_ICON.editing;
+      }
+      const chip = document.querySelector(`.strip-chip[data-key="${CSS.escape(key)}"]`);
+      if (chip) {
+        chip.className = 'strip-chip is-editing';
+        chip.querySelector('.chip-icon').textContent = STATUS_ICON.editing;
+      }
+    }
+
+    function buildProgressStrip(items) {
+      const counted = items.filter((i) => i.status !== 'skipped');
+      const done = counted.filter((i) => i.status === 'done').length;
+      const setsDone = counted.reduce((sum, i) => sum + i.setsDone, 0);
+      const setsPlanned = counted.reduce((sum, i) => sum + Math.max(i.setsPlanned, i.setsDone), 0);
+      const skipped = items.length - counted.length;
+      const strip = el('div', { class: 'progress-strip' });
+      strip.appendChild(el('div', { class: 'strip-counts' }, [
+        el('span', {}, [el('strong', { text: String(done) }), document.createTextNode(` / ${counted.length} exercises`)]),
+        el('span', {}, [el('strong', { text: String(setsDone) }), document.createTextNode(` / ${setsPlanned} sets`)]),
+        ...(skipped ? [el('span', { text: `${skipped} skipped` })] : []),
+      ]));
+      strip.appendChild(el('div', { class: 'strip-track', 'aria-hidden': 'true' }, [el('div', { class: 'strip-fill', style: `width:${counted.length ? (done / counted.length) * 100 : 0}%` })]));
+      const chips = el('div', { class: 'strip-chips', 'aria-label': 'Jump to an exercise' });
+      for (const i of items) {
+        const chip = el('button', { type: 'button', class: `strip-chip is-${i.status}`, 'data-key': i.key, title: i.name, 'aria-label': `${i.name}: ${i.status}` }, [
+          el('span', { class: 'chip-icon', 'aria-hidden': 'true', text: STATUS_ICON[i.status] }),
+          el('span', { class: 'chip-name', text: i.name }),
+        ]);
+        chip.addEventListener('click', () => {
+          const card = document.querySelector(`.ex-collapsible[data-key="${CSS.escape(i.key)}"]`);
+          if (!card) return;
+          setCardOpen(card, true);
+          scrollToCard(card, false);
+        });
+        chips.appendChild(chip);
+      }
+      strip.appendChild(chips);
+      return strip;
+    }
+
+    // ---------- Header ----------
+
+    function buildHeader() {
+      const header = el('div', { class: 'logger-header' });
+      header.appendChild(el('a', { class: 'back-link', href: 'today.html', text: '← Back to Today' }));
+      const titleText = session.session_type === 'gym'
+        ? `${formatWeekday(weekdayFromDate(session.date))} · ${generated && generated.sessionPurpose ? formatSessionType(generated.sessionPurpose) : 'Gym'}`
+        : formatSessionType(session.session_type);
+      header.appendChild(el('div', { class: 'logger-title', text: titleText }));
+      const meta = el('div', { class: 'logger-meta' });
+      if (session.goal_context) meta.appendChild(el('span', { text: `Goal priority #${session.goal_context.priority}` }));
+      if (generated) meta.appendChild(el('span', { text: `Planned: ${formatDuration(generated.estimatedMinutes)}` }));
+      if (session.duration_minutes != null) meta.appendChild(el('span', { text: `Duration: ${formatDuration(session.duration_minutes)}` }));
+      meta.appendChild(createStatusBadge(session.status, formatSessionType(session.status)));
+      header.appendChild(meta);
+      return header;
+    }
+
+    function weekdayFromDate(dateIso) {
+      const [y, m, d] = dateIso.split('-').map(Number);
+      return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' }).toLowerCase();
+    }
+
+    // ---------- Exercise section (gym) ----------
+
+    function buildExerciseSection(overview) {
+      const section = el('section');
+      section.appendChild(el('h2', { text: 'Exercises' }));
+
+      const loggedIds = new Set(session.exercises.map((p) => p.exercise_id));
+      const readOnly = session.status === 'completed';
+      const generatedItems = readOnly ? [] : (generated ? generated.exercises : []).filter((g) => !loggedIds.has(effectiveExerciseId(g)));
+
+      if (session.exercises.length === 0 && generatedItems.length === 0) {
+        section.appendChild(el('div', { class: 'state-block' }, [el('p', { text: 'No exercises yet.' })]));
+      }
+
+      const entries = [
+        ...session.exercises.map((perf) => ({ kind: 'logged', perf, exerciseId: perf.exercise_id })),
+        ...generatedItems.map((g) => ({ kind: 'generated', g, exerciseId: effectiveExerciseId(g) })),
+      ];
+      const sections = sectionsOf(entries.map((e) => e.exerciseId));
+      const grouped = sections.some((x) => x !== 'main');
+      const sectionCounts = new Map();
+      let currentSection = null;
+
+      entries.forEach((entry, index) => {
+        const item = overviewItem(entry);
+        overview.push(item);
+        const name = sections[index];
+        if (grouped && name !== currentSection) {
+          currentSection = name;
+          const heading = el('h3', { class: 'ex-section-title' }, [el('span', { text: SECTION_LABELS[name] }), el('span', { class: 'ex-section-count' })]);
+          heading.dataset.section = name;
+          section.appendChild(heading);
+        }
+        const counts = sectionCounts.get(name) || { done: 0, total: 0 };
+        if (item.status !== 'skipped') counts.total += 1;
+        if (item.status === 'done') counts.done += 1;
+        sectionCounts.set(name, counts);
+        const card = entry.kind === 'logged'
+          ? buildLoggedExerciseCard(entry.perf)
+          : skippedExerciseIds.has(entry.g.exercise_id) ? buildSkippedCard(entry.g) : buildPreloadedExerciseCard(entry.g);
+        section.appendChild(makeCollapsible(card, item));
+      });
+      for (const heading of section.querySelectorAll('.ex-section-title')) {
+        const c = sectionCounts.get(heading.dataset.section);
+        heading.querySelector('.ex-section-count').textContent = `${c.done} / ${c.total} done`;
+      }
+
+      return section;
+    }
+
+    /** One exercise's row: key, name, status, one-line detail, set counts. */
+    function overviewItem(entry) {
+      if (entry.kind === 'logged') {
+        const perf = entry.perf;
+        const generatedMatch = generated ? generated.exercises.find((g) => effectiveExerciseId(g) === perf.exercise_id) : null;
+        const key = `p${perf.id}`;
+        const hasLoggedData = perf.sets.some((s) => s.completed || s.weight !== null || s.reps !== null);
+        const planned = generatedMatch || (perf.target_sets != null ? perf : null);
+        const unit = repUnitOf(perf);
+        const setsDone = perf.sets.filter((s) => s.completed).length;
+        const status = session.status === 'completed' || hasLoggedData ? 'done' : drafts.get(key)?.dirty ? 'editing' : 'pending';
+        const detail = status === 'done'
+          ? shortSetText(perf.sets, unit)
+          : (planned ? formatSets(planned.target_sets, planned.target_reps_min, planned.target_reps_max) + (unit !== 'reps' ? ` ${unit}` : '') : `${perf.sets.length} sets`) + loadHintShort(perf);
+        return { key, exerciseId: perf.exercise_id, name: exerciseDisplayName(perf, generatedMatch), status, detail, setsDone, setsPlanned: planned ? planned.target_sets : perf.sets.length };
+      }
+      const g = entry.g;
+      const key = `g${g.exercise_id}`;
+      const sub = substitutions.get(g.exercise_id);
+      const skipped = skippedExerciseIds.has(g.exercise_id);
+      const status = skipped ? 'skipped' : drafts.get(key)?.dirty ? 'editing' : 'pending';
+      return { key, exerciseId: entry.exerciseId, name: sub ? sub.name : g.exercise_name, status, detail: skipped ? 'Skipped' : formatSets(g.target_sets, g.target_reps_min, g.target_reps_max), setsDone: 0, setsPlanned: g.target_sets };
+    }
+
+    function effectiveExerciseId(generatedItem) {
+      const sub = substitutions.get(generatedItem.exercise_id);
+      return sub ? sub.id : generatedItem.exercise_id;
+    }
+
+    function buildSkippedCard(g) {
+      const card = createCard();
+      card.classList.add('exercise-card', 'exercise-skipped');
+      card.appendChild(el('div', { class: 'exercise-name', text: g.exercise_name }));
+      card.appendChild(el('div', { class: 'card-subtitle', text: 'Skipped — not performed today' }));
+      const undo = createButton({ label: 'Undo skip', variant: 'ghost', onClick: () => { skippedExerciseIds.delete(g.exercise_id); render(); } });
+      card.appendChild(undo);
+      return card;
+    }
+
+    function buildLoggedExerciseCard(perf) {
+      const generatedMatch = generated ? generated.exercises.find((g) => effectiveExerciseId(g) === perf.exercise_id) : null;
+      const card = createCard();
+      card.classList.add('exercise-card');
+      const header = el('div', { class: 'exercise-header' });
+      header.appendChild(el('div', { class: 'exercise-name', text: exerciseDisplayName(perf, generatedMatch) }));
+      // An AI-committed exercise carries its own plan (target_sets), so it is not unplanned.
+      if (!generatedMatch && perf.target_sets == null) header.appendChild(el('span', { class: 'badge badge-warning', text: 'Unplanned exercise' }));
+      card.appendChild(header);
+      // Updated in place (a full render would drop unsaved set entries).
+      let onUnitChanged = () => {};
+      card.appendChild(buildLogOptionsPicker(perf, () => onUnitChanged()));
+
+      // Fix: `perf.target_*` is this exercise's own planned prescription
+      // when it was pre-created with one (e.g. an AI-committed session —
+      // see aiProposalLifecycle.ts) — shown as "Planned" the same way a
+      // deterministic `generatedMatch` already was, so an AI-planned
+      // exercise isn't silently missing its own prescription display.
+      const drill = drillById.get(perf.exercise_id);
+      if (drill) card.appendChild(el('p', { class: 'faint drill-note', style: 'margin:0.2rem 0 0', text: describeDrill(drill) }));
+      const plannedSource = generatedMatch || (perf.target_sets != null ? perf : null);
+      if (plannedSource) {
+        const completed = perf.sets.filter((s) => s.completed).length;
+        const started = session.status === 'completed' || perf.sets.some((s) => s.completed || s.weight !== null || s.reps !== null);
+        // Sets not done yet are not "skipped" until something is logged.
+        const skipped = started ? perf.sets.length - completed : 0;
+        const pva = el('div', { class: 'planned-vs-actual' });
+        const plannedUnit = repUnitOf(perf) !== 'reps' ? ` ${repUnitOf(perf)}` : '';
+        pva.appendChild(el('div', {}, [el('span', { class: 'pva-label', text: 'Planned' }), document.createTextNode(formatSets(plannedSource.target_sets, plannedSource.target_reps_min, plannedSource.target_reps_max) + plannedUnit + (drill && drill.perSide ? ' per side' : ''))]));
+        pva.appendChild(el('div', {}, [el('span', { class: 'pva-label', text: 'Actual' }), document.createTextNode(started ? `${completed} completed${skipped ? `, ${skipped} skipped` : ''}` : 'Not started')]));
+        card.appendChild(pva);
+        if (generatedMatch && generatedMatch.previous_performance && !loadHintOf(perf)) {
+          card.appendChild(el('p', { class: 'faint', text: `Last time: ${generatedMatch.previous_performance.weight ?? '—'} × ${generatedMatch.previous_performance.reps ?? '—'}${generatedMatch.previous_performance.rep_unit ? ` ${generatedMatch.previous_performance.rep_unit}` : ''} (${formatDate(generatedMatch.previous_performance.date)})` }));
+        }
+      }
+      const hint = loadHintOf(perf);
+      if (hint) card.appendChild(el('p', { class: `load-hint load-hint-${hint.kind}`, text: `${hint.text} (${formatDate(hint.lastDate)})` }));
+
+      // Fix: freeze into the static read-only table once the session is
+      // completed, OR once this exercise actually has real logged data —
+      // matching the ORIGINAL intended behavior (a truly-performed
+      // exercise shows a clean summary), not "any exercise with a
+      // pre-existing row is permanently frozen" (the actual bug: an
+      // AI-committed exercise is pre-created with empty, uncompleted
+      // sets — see aiProposalLifecycle.ts's commit — so it must stay
+      // editable, with Skip/Substitute, until the user actually logs
+      // something, exactly like a deterministic not-yet-logged exercise
+      // already does via buildPreloadedExerciseCard).
+      const hasLoggedData = perf.sets.some((s) => s.completed || s.weight !== null || s.reps !== null);
+      if (session.status === 'completed' || hasLoggedData) {
+        const table = el('table');
+        const headRow = el('tr');
+        const unitTh = el('th', { text: capitalize(repUnitOf(perf)) });
+        const showRir = !drill && perf.sets.some((s) => s.rir !== null && s.rir !== undefined);
+        headRow.append(el('th', { text: 'Set' }), el('th', { text: 'Weight' }), unitTh);
+        if (showRir) headRow.appendChild(el('th', { text: 'RIR' }));
+        headRow.appendChild(el('th', { text: 'Done' }));
+        onUnitChanged = () => { unitTh.textContent = capitalize(repUnitOf(perf)); };
+        table.appendChild(headRow);
+        for (const s of perf.sets) {
+          const row = el('tr');
+          row.appendChild(el('td', { text: String(s.set_number) }));
+          row.appendChild(el('td', { text: s.weight ?? '—' }));
+          row.appendChild(el('td', { text: s.reps ?? '—' }));
+          if (showRir) row.appendChild(el('td', { text: s.rir ?? '—' }));
+          row.appendChild(el('td', { text: s.completed ? 'Yes' : 'No' }));
+          table.appendChild(row);
+        }
+        card.appendChild(table);
+        return card;
+      }
+
+      const key = `p${perf.id}`;
+      const state = drafts.get(key) || { sets: perf.sets.map((s) => ({ ...s })), unit: repUnitOf(perf), noRir: !!drill, dirty: false };
+      drafts.set(key, state);
+      const onDirty = () => { state.dirty = true; dirty = true; markEditing(key); };
+      const setsContainer = el('div');
+      renderSetEditor(setsContainer, state, onDirty);
+      onUnitChanged = () => { state.unit = repUnitOf(perf); renderSetEditor(setsContainer, state, onDirty); };
+      card.appendChild(setsContainer);
+
+      const addSetBtn = createButton({ label: '+ Add set', variant: 'secondary', onClick: () => {
+        state.sets.push({ set_number: state.sets.length + 1, weight: null, reps: null, completed: false });
+        renderSetEditor(setsContainer, state, onDirty);
+        onDirty();
+      }});
+      card.appendChild(addSetBtn);
+
+      const statusEl = el('div');
+      const actions = el('div', { class: 'btn-row' });
+      const saveBtn = createButton({ label: 'Save exercise', onClick: async () => {
+        try {
+          await withSaving(saveBtn, statusEl, () => api(`/api/workouts/${sessionId}/exercises/${perf.id}`, {
+            method: 'PATCH',
+            body: { sets: state.sets },
+          }), 'Exercise saved.');
+          drafts.delete(key);
+          openKeys.delete(key);
+          dirty = anyDraftDirty();
+          lastSavedExerciseId = perf.exercise_id;
+          await reload();
+        } catch (err) { /* values preserved — card stays as-is (spec §61) */ }
+      }});
+      actions.appendChild(saveBtn);
+
+      // Fix: Skip/Substitute for an already-persisted, not-yet-logged
+      // exercise. Unlike the deterministic flow's own Skip (purely
+      // client-side, since a generated-preview item was never
+      // persisted), this row already exists in the database, so
+      // skipping it means actually deleting it — otherwise it would
+      // just reappear on the next reload.
+      actions.appendChild(createButton({ label: 'Skip exercise', variant: 'secondary', onClick: async () => {
+        if (!window.confirm(`Skip ${exerciseDisplayName(perf, generatedMatch)}? This removes it from today's session.`)) return;
+        try {
+          await withSaving(saveBtn, statusEl, () => api(`/api/workouts/${sessionId}/exercises/${perf.id}`, { method: 'DELETE' }), 'Skipped.');
+          drafts.delete(key);
+          openKeys.delete(key);
+          dirty = anyDraftDirty();
+          await reload();
+        } catch (err) { /* left as-is on failure */ }
+      }}));
+
+      // Substitute needs target_type/target_id to look up feasible
+      // alternatives (GET /api/programming/substitutes) — absent for a
+      // row created before this fix, or one added with no prescription.
+      if (perf.target_type && perf.target_id) {
+        actions.appendChild(createButton({ label: 'Substitute', variant: 'ghost', onClick: () => openPersistedSubstitutePicker(perf) }));
+      }
+
+      card.appendChild(actions);
+      card.appendChild(statusEl);
+
+      return card;
+    }
+
+    // Fix: the counterpart to openSubstitutePicker for an
+    // already-persisted exercise (e.g. an AI-committed session's
+    // pre-created row) — a separate function rather than a shared one
+    // with different onSelect branches, since the two cases differ in a
+    // way that matters for safety: this one must create the substitute
+    // row BEFORE deleting the original, so a failed create never loses
+    // the exercise slot entirely (worst case on a failed delete is a
+    // harmless duplicate the user can Skip, never a vanished exercise).
+    async function openPersistedSubstitutePicker(perf) {
+      const root = document.getElementById('day-modal-root');
+      root.innerHTML = '';
+      const exerciseName = exerciseDisplayName(perf, null);
+      const panel = el('div', { class: 'modal-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Substitute exercise' });
+      panel.appendChild(el('h2', { text: `Substitute for ${exerciseName}` }));
+      panel.appendChild(el('p', { class: 'muted', text: 'Loading feasible alternatives…' }));
+      const backdrop = el('div', { class: 'modal-backdrop' }, [panel]);
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeSubstituteModal(); });
+      document.addEventListener('keydown', onSubstituteModalKeydown);
+      root.appendChild(backdrop);
+
+      try {
+        const candidates = await api(`/api/programming/substitutes?target_type=${perf.target_type}&target_id=${perf.target_id}`);
+        panel.innerHTML = '';
+        panel.appendChild(el('h2', { text: `Substitute for ${exerciseName}` }));
+        const list = [...candidates.blueprint.map((c) => ({ ...c, source: 'Blueprint' })), ...candidates.outsideBlueprint.map((c) => ({ ...c, source: 'Approved outside-Blueprint' }))]
+          .filter((c) => c.id !== perf.exercise_id);
+        if (list.length === 0) panel.appendChild(el('p', { class: 'muted', text: 'No feasible alternative found.' }));
+        for (const c of list) {
+          const row = createButton({ label: `${c.name} (${c.source})`, variant: 'secondary', onClick: async () => {
+            row.disabled = true;
+            try {
+              await api(`/api/workouts/${sessionId}/exercises`, {
+                method: 'POST',
+                body: {
+                  exercise_id: c.id,
+                  order: perf.order,
+                  role: perf.role,
+                  target_sets: perf.target_sets,
+                  target_reps_min: perf.target_reps_min,
+                  target_reps_max: perf.target_reps_max,
+                  target_rir_min: perf.target_rir_min,
+                  target_rir_max: perf.target_rir_max,
+                  target_rest_seconds: perf.target_rest_seconds,
+                  target_type: perf.target_type,
+                  target_id: perf.target_id,
+                  sets: Array.from({ length: perf.target_sets || perf.sets.length }, (_, i) => ({ set_number: i + 1, weight: null, reps: null, completed: false })),
+                },
+              });
+              // Only delete the original AFTER the substitute is safely
+              // created — a failed delete here leaves a harmless
+              // duplicate rather than ever losing the exercise slot.
+              await api(`/api/workouts/${sessionId}/exercises/${perf.id}`, { method: 'DELETE' });
+              closeSubstituteModal();
+              await reload();
+            } catch (err) {
+              row.disabled = false;
+            }
+          }});
+          row.classList.add('btn-block');
+          row.style.marginTop = '0.5rem';
+          panel.appendChild(row);
+        }
+        panel.appendChild(createButton({ label: 'Cancel', variant: 'ghost', onClick: closeSubstituteModal }));
+      } catch (err) {
+        panel.innerHTML = '';
+        panel.appendChild(el('p', { class: 'muted', text: "Couldn't load alternatives." }));
+      }
+    }
+
+    // Final Copy/Explanation Fixes §1: the PERFORMED exercise's own
+    // persisted id is resolved through the real exercise catalogs
+    // first — this is correct whether or not it matches anything in
+    // `generated` (i.e. whether or not a substitution happened), and
+    // survives a reload with no transient substitution state. Falling
+    // back to `generatedMatch.exercise_name` only covers the (now rare)
+    // case where the name lookup itself hasn't loaded yet.
+    function exerciseDisplayName(perf, generatedMatch) {
+      return exerciseNamesById.get(perf.exercise_id) ?? generatedMatch?.exercise_name ?? perf.exercise_id;
+    }
+
+    function buildPreloadedExerciseCard(g) {
+      const sub = substitutions.get(g.exercise_id);
+      const card = createCard();
+      card.classList.add('exercise-card');
+
+      const header = el('div', { class: 'exercise-header' });
+      const left = el('div');
+      left.appendChild(el('div', { class: 'exercise-name', text: sub ? sub.name : g.exercise_name }));
+      left.appendChild(el('div', { class: 'exercise-targets', text: g.target_name }));
+      if (sub) left.appendChild(el('div', { class: 'faint', text: `Substituted for ${g.exercise_name}` }));
+      header.appendChild(left);
+      header.appendChild(el('div', { class: 'exercise-prescription', text: formatSets(g.target_sets, g.target_reps_min, g.target_reps_max) }));
+      card.appendChild(header);
+
+      if (g.previous_performance) {
+        card.appendChild(el('p', { class: 'faint', text: `Last time: ${g.previous_performance.weight ?? '—'} × ${g.previous_performance.reps ?? '—'}${g.previous_performance.rep_unit ? ` ${g.previous_performance.rep_unit}` : ''} (${formatDate(g.previous_performance.date)})` }));
+      } else {
+        card.appendChild(el('p', { class: 'faint', text: 'No previous performance recorded.' }));
+      }
+
+      const explain = el('details', { class: 'exercise-explanation' });
+      explain.appendChild(el('summary', { text: 'Why this exercise' }));
+      explain.appendChild(el('p', { text: g.friendly_reasoning || g.reasoning, style: 'margin:0.4rem 0 0' }));
+      card.appendChild(explain);
+
+      const key = `g${g.exercise_id}`;
+      const state = drafts.get(key) || { sets: buildInitialSets(g.target_sets), dirty: false };
+      drafts.set(key, state);
+      const onDirty = () => { state.dirty = true; dirty = true; markEditing(key); };
+      const setsContainer = el('div');
+      renderSetEditor(setsContainer, state, onDirty);
+      card.appendChild(setsContainer);
+
+      const addSetBtn = createButton({ label: '+ Add set', variant: 'secondary', onClick: () => {
+        state.sets.push({ set_number: state.sets.length + 1, weight: null, reps: null, completed: false });
+        renderSetEditor(setsContainer, state, onDirty);
+        onDirty();
+      }});
+      card.appendChild(addSetBtn);
+
+      const statusEl = el('div');
+      const actions = el('div', { class: 'btn-row' });
+      const saveBtn = createButton({ label: 'Save exercise', onClick: async () => {
+        try {
+          await withSaving(saveBtn, statusEl, () => api(`/api/workouts/${sessionId}/exercises`, {
+            method: 'POST',
+            body: { exercise_id: sub ? sub.id : g.exercise_id, order: session.exercises.length + 1, role: 'primary', sets: state.sets },
+          }), 'Exercise saved.');
+          drafts.delete(key);
+          openKeys.delete(key);
+          dirty = anyDraftDirty();
+          lastSavedExerciseId = sub ? sub.id : g.exercise_id;
+          await reload();
+        } catch (err) { /* values preserved — card stays as-is (spec §61) */ }
+      }});
+      actions.appendChild(saveBtn);
+      actions.appendChild(createButton({ label: 'Skip exercise', variant: 'secondary', onClick: () => { skippedExerciseIds.add(g.exercise_id); render(); } }));
+      actions.appendChild(createButton({ label: sub ? 'Change substitute' : 'Substitute', variant: 'ghost', onClick: () => openSubstitutePicker(g) }));
+      card.appendChild(actions);
+      card.appendChild(statusEl);
+
+      return card;
+    }
+
+    function buildInitialSets(count) {
+      const sets = [];
+      for (let i = 1; i <= count; i++) sets.push({ set_number: i, weight: null, reps: null, completed: false });
+      return sets;
+    }
+
+    // "Drill · 3–5 sets × 3–6 reps per side · rest 90–180 s. Effort: ..."
+    function describeDrill(drill) {
+      const unit = drill.unit === 'seconds' ? 's' : 'reps';
+      return `Drill · ${drill.sets[0]}–${drill.sets[1]} sets × ${drill.amount[0]}–${drill.amount[1]} ${unit}${drill.perSide ? ' per side' : ''} · rest ${drill.restSeconds[0]}–${drill.restSeconds[1]} s. Effort: ${drill.effort}`;
+    }
+
+    function renderSetEditor(container, state, onDirty) {
+      container.innerHTML = '';
+      state.sets.forEach((set, i) => {
+        // Drills have an effort note instead of RIR (no RIR box).
+        const row = el('div', { class: state.noRir ? 'set-row no-rir' : 'set-row' });
+        row.appendChild(el('div', { class: 'set-index', text: `#${set.set_number}` }));
+        const weight = el('input', { type: 'number', inputmode: 'decimal', step: '0.5', placeholder: state.noRir ? 'kg (opt.)' : 'kg', 'aria-label': `Set ${set.set_number} weight` });
+        if (set.weight !== null) weight.value = set.weight;
+        weight.addEventListener('input', () => { set.weight = weight.value === '' ? null : Number(weight.value); onDirty(); });
+        const unit = state.unit || 'reps';
+        const reps = el('input', { type: 'number', inputmode: 'numeric', placeholder: unit, 'aria-label': `Set ${set.set_number} ${unit}` });
+        if (set.reps !== null) reps.value = set.reps;
+        reps.addEventListener('input', () => { set.reps = reps.value === '' ? null : Number(reps.value); onDirty(); });
+        // Reps in reserve: how many more reps were left. Optional; 0 = failure.
+        const rir = el('input', { type: 'number', inputmode: 'numeric', min: '0', max: '10', step: '1', placeholder: 'RIR', class: 'set-rir', 'aria-label': `Set ${set.set_number} reps in reserve` });
+        if (set.rir !== null && set.rir !== undefined) rir.value = set.rir;
+        rir.addEventListener('input', () => { set.rir = rir.value === '' ? null : Number(rir.value); onDirty(); });
+        const done = el('button', { type: 'button', class: 'set-done-toggle', 'aria-pressed': String(!!set.completed), 'aria-label': `Set ${set.set_number} done` }, [document.createTextNode('✓')]);
+        done.addEventListener('click', () => { set.completed = !set.completed; done.setAttribute('aria-pressed', String(set.completed)); onDirty(); });
+        const remove = createButton({ label: '×', variant: 'ghost', ariaLabel: `Remove set ${set.set_number}`, onClick: () => {
+          const idx = state.sets.indexOf(set);
+          state.sets.splice(idx, 1);
+          state.sets.forEach((s, i2) => (s.set_number = i2 + 1));
+          renderSetEditor(container, state, onDirty);
+          onDirty();
+        }});
+        if (state.noRir) row.append(weight, reps, done, remove);
+        else row.append(weight, reps, rir, done, remove);
+        container.appendChild(row);
+      });
+      if (state.sets.length && !state.noRir) container.appendChild(el('p', { class: 'faint set-rir-hint', text: 'RIR = reps you could still have done (0 = failure). Optional; the last set matters most.' }));
+    }
+
+    function closeSubstituteModal() {
+      document.getElementById('day-modal-root').innerHTML = '';
+      document.removeEventListener('keydown', onSubstituteModalKeydown);
+    }
+    function onSubstituteModalKeydown(e) {
+      if (e.key === 'Escape') closeSubstituteModal();
+    }
+
+    async function openSubstitutePicker(g) {
+      const root = document.getElementById('day-modal-root');
+      root.innerHTML = '';
+      const panel = el('div', { class: 'modal-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Substitute exercise' });
+      panel.appendChild(el('h2', { text: `Substitute for ${g.exercise_name}` }));
+      panel.appendChild(el('p', { class: 'muted', text: 'Loading feasible alternatives…' }));
+      const backdrop = el('div', { class: 'modal-backdrop' }, [panel]);
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeSubstituteModal(); });
+      document.addEventListener('keydown', onSubstituteModalKeydown);
+      root.appendChild(backdrop);
+
+      try {
+        const candidates = await api(`/api/programming/substitutes?target_type=${g.target_type}&target_id=${g.target_id}`);
+        panel.innerHTML = '';
+        panel.appendChild(el('h2', { text: `Substitute for ${g.exercise_name}` }));
+        const list = [...candidates.blueprint.map((c) => ({ ...c, source: 'Blueprint' })), ...candidates.outsideBlueprint.map((c) => ({ ...c, source: 'Approved outside-Blueprint' }))]
+          .filter((c) => c.id !== g.exercise_id);
+        if (list.length === 0) panel.appendChild(el('p', { class: 'muted', text: 'No feasible alternative found.' }));
+        for (const c of list) {
+          const row = createButton({ label: `${c.name} (${c.source})`, variant: 'secondary', onClick: () => {
+            substitutions.set(g.exercise_id, { id: c.id, name: c.name });
+            closeSubstituteModal();
+            render();
+          }});
+          row.classList.add('btn-block');
+          row.style.marginTop = '0.5rem';
+          panel.appendChild(row);
+        }
+        panel.appendChild(createButton({ label: 'Cancel', variant: 'ghost', onClick: closeSubstituteModal }));
+      } catch (err) {
+        panel.innerHTML = '';
+        panel.appendChild(el('p', { class: 'muted', text: "Couldn't load alternatives." }));
+      }
+    }
+
+    // ---------- Add unplanned exercise ----------
+
+    function buildAddExerciseSection() {
+      const section = el('section');
+      section.appendChild(el('h2', { text: 'Add unplanned exercise' }));
+      section.appendChild(el('p', { class: 'muted', text: "Search the complete Blueprint library — clearly separate from today's generated program." }));
+
+      const pickerHolder = { picker: null };
+      const pickerContainer = el('div');
+      section.appendChild(el('label', { text: 'Exercise' }, [pickerContainer]));
+
+      api('/api/blueprint/exercises').then((exercises) => {
+        pickerHolder.picker = createBlueprintExercisePicker(exercises, { onChange: updateSaveButtonState });
+        pickerContainer.appendChild(pickerHolder.picker.root);
+        updateSaveButtonState();
+      }).catch(() => {
+        pickerContainer.appendChild(el('p', { class: 'muted', text: "Couldn't load the Blueprint exercise library." }));
+      });
+
+      const roleSelect = el('select', {}, [
+        el('option', { value: 'primary', text: 'Primary' }),
+        el('option', { value: 'secondary', text: 'Secondary' }),
+        el('option', { value: 'accessory', text: 'Accessory' }),
+        el('option', { value: 'finisher', text: 'Finisher' }),
+      ]);
+      section.appendChild(el('label', { text: 'Role' }, [roleSelect]));
+
+      const state = { sets: [{ set_number: 1, weight: null, reps: null, completed: false }] };
+      const setsContainer = el('div');
+      renderSetEditor(setsContainer, state, () => { dirty = true; });
+      section.appendChild(setsContainer);
+      section.appendChild(createButton({ label: '+ Add set', variant: 'secondary', onClick: () => {
+        state.sets.push({ set_number: state.sets.length + 1, weight: null, reps: null, completed: false });
+        renderSetEditor(setsContainer, state, () => { dirty = true; });
+      }}));
+
+      const statusEl = el('div');
+      const saveBtn = createButton({ label: 'Add exercise', disabled: true, onClick: async () => {
+        const selected = pickerHolder.picker ? pickerHolder.picker.getSelected() : null;
+        if (!selected) {
+          showInlineStatus(statusEl, 'error', 'Pick a valid Blueprint exercise from the list.');
+          return;
+        }
+        try {
+          await withSaving(saveBtn, statusEl, () => api(`/api/workouts/${sessionId}/exercises`, {
+            method: 'POST',
+            body: { exercise_id: selected.id, order: session.exercises.length + 1, role: roleSelect.value, sets: state.sets },
+          }), 'Added.');
+          dirty = false;
+          if (pickerHolder.picker) pickerHolder.picker.reset();
+          updateSaveButtonState();
+          await reload();
+        } catch (err) { /* values preserved */ }
+      }});
+      section.appendChild(saveBtn);
+      section.appendChild(statusEl);
+
+      function updateSaveButtonState() {
+        saveBtn.disabled = !(pickerHolder.picker && pickerHolder.picker.getSelected());
+      }
+      return section;
+    }
+
+    // ---------- Session note ----------
+    // A small, optional, personal note for this specific session (e.g.
+    // "used rope for pushdowns today") — separate from the generated
+    // program's own explanations. Persisted on workout_sessions.notes
+    // (already existed for this exact purpose), never affecting
+    // programming decisions or workout history.
+
+    function buildSessionNoteSection() {
+      const section = el('section', { class: 'session-note-section' });
+      section.appendChild(el('h2', { text: 'Session note', style: 'font-size:1rem;margin-bottom:0.35rem' }));
+      const textarea = el('textarea', {
+        id: 'session-note-input',
+        rows: '2',
+        placeholder: 'e.g. Rope for pushdowns, EZ bar for curls...',
+        style: 'width:100%;resize:vertical;font:inherit',
+      });
+      textarea.value = session.notes || '';
+      section.appendChild(textarea);
+
+      const actions = el('div', { class: 'btn-row', style: 'margin-top:0.4rem' });
+      const statusEl = el('div');
+      const saveBtn = createButton({ label: 'Save note', variant: 'secondary', onClick: async () => {
+        const value = textarea.value.trim() || null;
+        try {
+          await withSaving(saveBtn, statusEl, () => api(`/api/workouts/${sessionId}`, {
+            method: 'PATCH',
+            body: { notes: value },
+          }), value ? 'Note saved.' : 'Note cleared.');
+          session.notes = value;
+        } catch (err) { /* value stays in the textarea, unsaved (spec §61) */ }
+      }});
+      actions.appendChild(saveBtn);
+      section.appendChild(actions);
+      section.appendChild(statusEl);
+      return section;
+    }
+
+    // ---------- Badminton ----------
+
+    function buildBadmintonSection() {
+      const section = el('section');
+      section.appendChild(el('h2', { text: 'Badminton session' }));
+      const details = session.badminton_details || {};
+      // Editable after finishing too (2026-10-21): badminton is often logged
+      // after the fact, and mistakes need fixing.
+
+      const intensity = el('select', { id: 'bm-intensity' }, ['low', 'medium', 'high'].map((v) => el('option', { value: v, text: v, ...(details.intensity === v ? { selected: 'selected' } : {}) })));
+      const format = el('select', { id: 'bm-format' }, ['singles', 'doubles'].map((v) => el('option', { value: v, text: v, ...(details.format === v ? { selected: 'selected' } : {}) })));
+      const games = el('input', { id: 'bm-games', type: 'number', min: '0' });
+      if (details.games_count != null) games.value = details.games_count;
+      const quality = el('select', { id: 'bm-quality' }, [1, 2, 3, 4, 5].map((v) => el('option', { value: String(v), text: String(v), ...(details.session_quality === v ? { selected: 'selected' } : {}) })));
+      const fatigue = el('select', { id: 'bm-fatigue' }, [1, 2, 3, 4, 5].map((v) => el('option', { value: String(v), text: String(v), ...(details.post_session_fatigue === v ? { selected: 'selected' } : {}) })));
+      const notes = el('input', { id: 'bm-notes', type: 'text' });
+      if (details.notes) notes.value = details.notes;
+
+      for (const [label, input] of [['Intensity', intensity], ['Format', format], ['Games', games], ['Session quality (1-5)', quality], ['Post-session fatigue (1-5)', fatigue], ['Notes', notes]]) {
+        section.appendChild(el('label', { text: label }, [input]));
+      }
+
+      const statusEl = el('div');
+      const saveBtn = createButton({ label: 'Save badminton details', onClick: async () => {
+        try {
+          await withSaving(saveBtn, statusEl, () => api(`/api/workouts/${sessionId}/badminton-details`, {
+            method: 'PUT',
+            body: {
+              intensity: intensity.value,
+              format: format.value,
+              games_count: games.value ? Number(games.value) : null,
+              session_quality: Number(quality.value),
+              post_session_fatigue: Number(fatigue.value),
+              notes: notes.value || null,
+            },
+          }), 'Saved.');
+        } catch (err) { /* values preserved */ }
+      }});
+      section.appendChild(saveBtn);
+      section.appendChild(statusEl);
+      return section;
+    }
+
+    // ---------- Finish / completed ----------
+
+    // Manual duration (2026-10-21): the user types whole minutes. Never
+    // prefilled with a guess (the old page-load clock was wrong ~40% of
+    // the time); required to finish; editable afterwards.
+    const DURATION_MAX_MINUTES = 360;
+
+    function buildDurationInput(id) {
+      return el('input', { id, type: 'number', inputmode: 'numeric', min: '1', max: String(DURATION_MAX_MINUTES), step: '1', placeholder: 'e.g. 65', class: 'duration-input' });
+    }
+
+    /** The typed duration as a whole number of minutes, or an error message. */
+    function readDuration(input) {
+      const raw = input.value.trim();
+      const n = Number(raw);
+      if (raw === '' || !Number.isInteger(n) || n < 1 || n > DURATION_MAX_MINUTES) {
+        return { error: `Enter the duration as whole minutes, 1 to ${DURATION_MAX_MINUTES} (e.g. 65 or 120).` };
+      }
+      return { minutes: n };
+    }
+
+    function buildFinishBar() {
+      const bar = el('div', { class: 'logger-finish-bar' });
+      const completedSets = session.exercises.reduce((sum, p) => sum + p.sets.filter((s) => s.completed).length, 0);
+      bar.appendChild(el('p', { class: 'faint', text: `${session.exercises.length} exercise(s) logged, ${completedSets} completed set(s), ${skippedExerciseIds.size} skipped.`, style: 'margin:0 0 0.5rem' }));
+      const statusEl = el('div');
+      const durationInput = buildDurationInput('finish-duration');
+      bar.appendChild(el('label', { text: 'Duration (minutes)' }, [durationInput]));
+      const finishBtn = createButton({ label: 'Finish workout', variant: 'primary' });
+      finishBtn.classList.add('btn-block');
+      finishBtn.addEventListener('click', async () => {
+        const duration = readDuration(durationInput);
+        if (duration.error) {
+          showInlineStatus(statusEl, 'error', duration.error);
+          durationInput.focus();
+          return;
+        }
+        try {
+          await withSaving(finishBtn, statusEl, () => api(`/api/workouts/${sessionId}`, {
+            method: 'PATCH',
+            body: { status: 'completed', duration_minutes: duration.minutes, duration_source: 'user_entered' },
+          }), 'Workout completed');
+          await reload();
+        } catch (err) { /* preserved */ }
+      });
+      bar.appendChild(finishBtn);
+      bar.appendChild(statusEl);
+      return bar;
+    }
+
+    // Pure formatter: (session, generated) -> plain text, built from the
+    // exact same fields buildLoggedExerciseCard renders (performed sets,
+    // the same exerciseDisplayName resolution — never a separately
+    // invented name), so the copied text and the visible table can
+    // never drift apart. No DOM access, kept separate from the
+    // Clipboard API call itself so it's testable without a browser (see
+    // tests/frontend/copyWorkoutText.test.ts).
+    function buildCopyText(session, generated) {
+      const lines = [`Workout — ${formatDate(session.date, { weekday: 'long' })}`, ''];
+      for (const perf of session.exercises) {
+        const generatedMatch = generated ? generated.exercises.find((g) => g.exercise_id === perf.exercise_id) : null;
+        const name = exerciseDisplayName(perf, generatedMatch);
+        const unit = perf.rep_unit && perf.rep_unit !== 'reps' ? ` ${perf.rep_unit}` : '';
+        const setsText = perf.sets.map((s) => `${s.weight ?? '—'}×${s.reps ?? '—'}${unit}${s.rir !== null && s.rir !== undefined ? ` @RIR ${s.rir}` : ''}${s.completed ? '' : ' (skipped)'}`).join(', ');
+        const how = [perf.equipment, perf.attachment].filter(Boolean).join(', ');
+        lines.push(`${name}${how ? ` (${how})` : ''} — ${perf.sets.length} set(s): ${setsText}`);
+      }
+      if (session.notes) {
+        lines.push('', `Session note: ${session.notes}`);
+      }
+      return lines.join('\n');
+    }
+
+    // Android Copy Button Reliability Fix §4/§5/§6/§16: a progressive
+    // fallback that copies the EXACT same string via whichever mechanism
+    // the browser actually supports, rather than assuming the modern
+    // Clipboard API always succeeds (it silently rejects on some
+    // Android/Chrome builds, notably outside a user-gesture-derived
+    // secure-context grant). Feature-detected, never device/browser
+    // sniffed. Resolves `true` only if a copy mechanism actually
+    // reported success — never assumed, per §7.
+    async function copyTextToClipboard(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (err) {
+          // Rejected promise or thrown exception — fall through to the
+          // synchronous execCommand fallback below rather than failing
+          // immediately (§4/§5).
+        }
+      }
+      // §6: a traditional, synchronous, browser-compatible fallback for
+      // when the modern API is unavailable or was just rejected — a
+      // temporary offscreen (never visibly shown, §6) textarea,
+      // selected and copied via document.execCommand.
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.top = '-9999px';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, text.length);
+        const copied = typeof document.execCommand === 'function' && document.execCommand('copy');
+        document.body.removeChild(textarea);
+        return !!copied;
+      } catch (err) {
+        return false;
+      }
+    }
+
+    // Android Copy Button Reliability Fix §11: wraps a copy function
+    // with a monotonic attempt counter so a slower, OLDER attempt's
+    // async result can never overwrite a NEWER attempt's UI state (e.g.
+    // attempt 1 fails, attempt 2 — tapped before attempt 1's fallback
+    // resolved — succeeds; attempt 1 finishing last must not revert the
+    // UI back to failure). Extracted as its own factory (rather than
+    // inlined in the button's onClick) so this race-safety is directly
+    // testable — see tests/frontend/copyWorkoutText.test.ts.
+    function createCopyController(copyFn) {
+      let attemptId = 0;
+      return function attemptCopy(text, { onStart, onSuccess, onFailure, onClear }) {
+        const thisAttempt = ++attemptId;
+        onStart();
+        return copyFn(text).then((copied) => {
+          if (thisAttempt !== attemptId) return; // superseded by a newer attempt
+          if (copied) onSuccess();
+          else onFailure(text);
+          setTimeout(() => { if (thisAttempt === attemptId) onClear(); }, 3000);
+        });
+      };
+    }
+
+    /** Duration on a completed session: shown, and editable. A duration
+     * from the old clock is flagged so it can be corrected. */
+    function buildDurationEditor() {
+      const box = el('div', { class: 'duration-editor', style: 'margin:0 0 0.75rem' });
+      const current = session.duration_minutes;
+      const legacy = current != null && session.duration_source !== 'user_entered';
+      const text = current == null
+        ? 'Duration: not entered.'
+        : `Duration: ${current} min${legacy ? ' (recorded by the old timer, often wrong: enter the real duration if you know it)' : ''}`;
+      box.appendChild(el('p', { class: legacy || current == null ? 'faint' : '', text, style: 'margin:0 0 0.25rem' }));
+      const input = buildDurationInput('edit-duration');
+      const statusEl = el('div');
+      const saveBtn = createButton({ label: 'Save duration', onClick: async () => {
+        const duration = readDuration(input);
+        if (duration.error) return showInlineStatus(statusEl, 'error', duration.error);
+        try {
+          await withSaving(saveBtn, statusEl, () => api(`/api/workouts/${sessionId}`, {
+            method: 'PATCH',
+            body: { duration_minutes: duration.minutes, duration_source: 'user_entered' },
+          }), 'Duration saved');
+          await reload();
+        } catch (err) { /* preserved */ }
+      }});
+      box.appendChild(el('label', { text: current == null ? 'Duration (minutes)' : 'Change duration (minutes)' }, [input]));
+      box.appendChild(saveBtn);
+      box.appendChild(statusEl);
+      return box;
+    }
+
+    function buildCompletedFooter() {
+      const bar = el('div', { class: 'logger-finish-bar' });
+      bar.appendChild(el('p', { text: 'Workout completed', style: 'font-weight:700;margin:0 0 0.5rem' }));
+      bar.appendChild(buildDurationEditor());
+      const row = el('div', { class: 'btn-row' });
+      let manualCopyBox = null;
+      // Copy is for the performed-exercise table (gym sessions) — a
+      // badminton day has no such table to copy.
+      if (session.session_type !== 'badminton') {
+        const copyStatus = el('span', { class: 'faint', style: 'align-self:center' });
+        // Android Copy Button Reliability Fix §8: the manual
+        // selectable-text fallback, shown ONLY when both the modern
+        // Clipboard API and the execCommand fallback fail (see
+        // createCopyController above for the stale-attempt guard).
+        manualCopyBox = el('div', { class: 'manual-copy-box', hidden: true, style: 'width:100%;margin-top:0.5rem' });
+        const manualCopyTextarea = el('textarea', {
+          rows: '6',
+          readonly: true,
+          style: 'width:100%;resize:vertical;font:inherit',
+          'aria-label': 'Workout text — select and copy manually',
+        });
+        manualCopyBox.appendChild(manualCopyTextarea);
+        const attemptCopy = createCopyController(copyTextToClipboard);
+        const copyBtn = createButton({ label: 'Copy', variant: 'secondary', onClick: async () => {
+          const text = buildCopyText(session, generated);
+          await attemptCopy(text, {
+            onStart: () => { manualCopyBox.hidden = true; copyStatus.textContent = ''; },
+            onSuccess: () => { copyStatus.textContent = 'Copied to clipboard'; },
+            onFailure: (failedText) => {
+              copyStatus.textContent = 'Automatic copy failed. Select the workout text below and copy it manually.';
+              manualCopyTextarea.value = failedText;
+              manualCopyBox.hidden = false;
+              manualCopyTextarea.focus();
+              manualCopyTextarea.select();
+            },
+            onClear: () => { copyStatus.textContent = ''; },
+          });
+        }});
+        row.appendChild(copyBtn);
+        row.appendChild(copyStatus);
+      }
+      row.appendChild(el('a', { class: 'btn', href: 'history.html', text: 'View History' }));
+      row.appendChild(el('a', { class: 'btn btn-secondary', href: 'today.html', text: 'Back to Today' }));
+      row.appendChild(createButton({ label: 'Edit workout', variant: 'ghost', onClick: async () => {
+        await api(`/api/workouts/${sessionId}`, { method: 'PATCH', body: { status: 'in_progress' } });
+        await reload();
+      }}));
+      bar.appendChild(row);
+      if (manualCopyBox) bar.appendChild(manualCopyBox);
+      return bar;
+    }
+
+    async function reload() {
+      session = await api(`/api/workouts/${sessionId}`);
+      render();
+    }
+
+    load();
+  </script>
+</body>
+</html>

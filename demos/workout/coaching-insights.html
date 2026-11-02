@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head><link rel="stylesheet" href="demo-bar.css"><script src="demo-data.js"></script><script src="demo-shim.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Insights - Workout Programmer</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .progress-list { display: grid; gap: var(--space-3); }
+    .progress-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+    .progress-numbers { font-variant-numeric: tabular-nums; }
+    .spark { width: 120px; height: 32px; flex: none; }
+    .spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+    .spark circle { fill: var(--accent); }
+    .spark circle.deload { fill: var(--surface); stroke: var(--accent); stroke-width: 1; }
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .volume-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+    .volume-table th, .volume-table td { padding: 0.35rem 0.5rem; text-align: center; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    .volume-table th:first-child, .volume-table td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); }
+    .volume-table .group-row td { background: var(--surface-muted); font-weight: 600; text-align: left; }
+    .vol-good { background: var(--success-bg); color: var(--success); }
+    .vol-mid { background: var(--warning-bg); color: var(--warning); }
+    .vol-low { background: var(--danger-bg); color: var(--danger); }
+    .vol-none { color: var(--text-faint); }
+  </style>
+</head>
+<body><div id="demo-bar"><span class="lg">Workout Programmer · read-only demo with sample data</span><span class="sm">Demo · sample data</span><a href="../../index.html"><span class="lg">← Back to portfolio</span><span class="sm">← Portfolio</span></a></div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header id="app-header" class="app-header"></header>
+
+  <main id="main-content">
+    <h1>Insights</h1>
+    <p class="muted">What is actually happening in your training, from what you have logged.</p>
+
+    <section>
+      <h2>Recovery and training state</h2>
+      <div id="state-section"></div>
+      <div id="deload-history"></div>
+    </section>
+
+    <section>
+      <h2>Strength progress</h2>
+      <p class="faint">Each exercise compared only with itself on the same equipment, attachment and count unit: your best set per session as an estimated 1-rep max (for steps, seconds or metres, the heaviest load). Set these on each exercise in the logger; sessions without them form their own series. Hollow dots are deload sessions and do not count.</p>
+      <div id="strength-section"></div>
+    </section>
+
+    <section>
+      <h2>Weekly volume</h2>
+      <p class="faint">Direct sets done / required per muscle, by week (current week so far).</p>
+      <div id="volume-section"></div>
+    </section>
+
+    <section>
+      <h2>Consistency</h2>
+      <div id="consistency-section"></div>
+    </section>
+
+    <section>
+      <h2>Athletic work</h2>
+      <p class="faint">Athletic-day drills: badminton fitness, mobility and conditioning. Tracked by how often and how much, not by strength numbers.</p>
+      <div id="athletic-section"></div>
+    </section>
+
+    <section>
+      <h2>Goal check-ins</h2>
+      <div id="checkins-section"></div>
+    </section>
+
+    <section>
+      <h2>Structural balance advisories</h2>
+      <div id="advisories-section"></div>
+    </section>
+
+    <section>
+      <h2>Techniques prescribed this week</h2>
+      <div id="techniques-section"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+  <script>
+    renderAppHeader('coaching-insights.html');
+
+    // ---------- Recovery / training state (data contract §1, reused) ----------
+
+    async function loadState() {
+      const container = document.getElementById('state-section');
+      showLoading(container, 'Loading training state…');
+      try {
+        const data = await api('/api/programming/periodization');
+        renderState(data);
+      } catch (err) {
+        // Graceful degradation (spec §8) — periodization is optional
+        // context here too; the normal-state fallback is always safe to
+        // show rather than blocking this section.
+        renderState(null);
+      }
+    }
+
+    function renderState(data) {
+      const container = document.getElementById('state-section');
+      container.innerHTML = '';
+      const card = createCard();
+      card.classList.add('state-banner');
+      if (!data) {
+        card.appendChild(el('div', { class: 'card-title', text: 'Normal training' }));
+        card.appendChild(el('p', { class: 'muted', text: 'You are currently in a normal training state.', style: 'margin:0' }));
+        container.appendChild(card);
+        return;
+      }
+      card.appendChild(el('div', { class: 'card-title', text: formatDeloadReason(data.deloadReason) }));
+      card.appendChild(el('p', { class: 'muted', text: data.explanation || 'You are currently in a normal training state.', style: 'margin:0 0 0.2rem' }));
+      if (data.deloadEndDate && data.periodizationState === 'REACTIVE_DELOAD') {
+        card.appendChild(el('p', { class: 'faint', text: `Expected through ${formatDate(data.deloadEndDate)}`, style: 'margin:0' }));
+      }
+      // The evidence behind a reactive deload: which exercises fell, from
+      // what to what (estimated 1RM, each exercise against itself).
+      const signals = (data.reactiveEvidence && data.reactiveEvidence.signals) || [];
+      if (signals.length > 0) {
+        card.appendChild(el('p', { class: 'faint', text: 'Why: these exercises trended down (estimated 1-rep max):', style: 'margin:0.6rem 0 0.2rem' }));
+        for (const s of signals) {
+          const parts = (s.exercises || []).filter((x) => x.trend === 'down').map((x) => `${x.exerciseName}${[x.equipment, x.attachment].filter(Boolean).length ? ` (${[x.equipment, x.attachment].filter(Boolean).join(', ')})` : ''} ${x.first} → ${x.last} kg over ${x.points} sessions`);
+          card.appendChild(el('p', { class: 'faint', text: `• ${s.targetName}${parts.length ? ': ' + parts.join('; ') : ' (measured before the per-exercise fix)'}`, style: 'margin:0' }));
+        }
+      }
+      if (data.periodizationState === 'REACTIVE_DELOAD') {
+        const statusEl = el('div');
+        const btn = createButton({ label: 'End this deload now', variant: 'secondary', onClick: async () => {
+          try {
+            await withSaving(btn, statusEl, () => api('/api/programming/periodization/end-reactive-deload', { method: 'POST' }), 'Deload ended. New workouts use normal volume.');
+            await loadState();
+          } catch (err) { /* error shown in statusEl */ }
+        }});
+        card.append(el('div', { class: 'btn-row', style: 'margin-top:0.6rem' }, [btn]), statusEl);
+      }
+      container.appendChild(card);
+    }
+
+    // ---------- Structural balance advisories (data contract §4) ----------
+
+    const ADVISORY_CATEGORY_LABEL = {
+      push_pull_imbalance: 'Push/pull balance',
+      persistent_target_coverage_gap: 'Coverage gap',
+    };
+
+    /** An advisory's `category` -> a plain-language title. An
+     * unrecognized/legacy category degrades to a humanized label rather
+     * than blank (spec §6's "unknown enum value" rule). */
+    function formatAdvisoryCategory(category) {
+      return ADVISORY_CATEGORY_LABEL[category] || capitalize(String(category || '').replace(/_/g, ' '));
+    }
+
+    async function loadAdvisories() {
+      const container = document.getElementById('advisories-section');
+      showLoading(container, 'Loading structural advisories…');
+      try {
+        const data = await api('/api/programming/structural-advisories');
+        renderAdvisories(data.advisories);
+      } catch (err) {
+        showError(container, "We couldn't load structural advisories.", loadAdvisories);
+      }
+    }
+
+    function renderAdvisories(advisories) {
+      const container = document.getElementById('advisories-section');
+      container.innerHTML = '';
+      if (!advisories || advisories.length === 0) {
+        showEmpty(container, 'No structural advisories are active for this plan.');
+        return;
+      }
+      for (const advisory of advisories) container.appendChild(buildAdvisoryCard(advisory));
+    }
+
+    /** Never presents an advisory as a diagnosis (spec §4E) — category,
+     * a severity label ALWAYS paired with its badge (never color-only,
+     * spec §6.4), the real evidence/explanation/suggested action, and
+     * the affected target's resolved name. `affected_target_names`
+     * (this page's own small backend addition — see
+     * docs/COACHING_DEPTH_UI_DATA_CONTRACT.md §5 point 1) is preferred;
+     * the raw id is shown only if that field is ever absent (an older
+     * backend). */
+    function buildAdvisoryCard(advisory) {
+      const card = createCard();
+      const row = el('div', { class: 'card-row' });
+      row.appendChild(el('div', { class: 'card-title', text: formatAdvisoryCategory(advisory.category) }));
+      row.appendChild(createStatusBadge(advisory.severity, formatAdvisorySeverity(advisory.severity)));
+      card.appendChild(row);
+      const names = advisory.affected_target_names && advisory.affected_target_names.length > 0 ? advisory.affected_target_names : advisory.affected_targets;
+      if (names && names.length > 0) {
+        card.appendChild(el('div', { class: 'card-subtitle', text: names.join(', ') }));
+      }
+      card.appendChild(el('p', { text: advisory.explanation, style: 'margin:0.5rem 0 0.3rem' }));
+      card.appendChild(el('p', { class: 'faint', text: `Evidence: ${advisory.evidence}`, style: 'margin:0 0 0.3rem' }));
+      card.appendChild(el('p', { class: 'muted', text: advisory.suggested_review_action, style: 'margin:0' }));
+      return card;
+    }
+
+    // ---------- Techniques prescribed this week (data contract §5 point 2) ----------
+
+    async function loadTechniques() {
+      const container = document.getElementById('techniques-section');
+      showLoading(container, 'Loading this week’s plan…');
+      try {
+        const week = await api('/api/programming/week');
+        renderTechniques(collectWeekAppliedTechniques(week.days));
+      } catch (err) {
+        showError(container, "We couldn't load this week's plan.", loadTechniques);
+      }
+    }
+
+    function renderTechniques(entries) {
+      const container = document.getElementById('techniques-section');
+      container.innerHTML = '';
+      if (!entries || entries.length === 0) {
+        showEmpty(container, 'No intensity techniques are prescribed this week.');
+        return;
+      }
+      for (const entry of entries) container.appendChild(buildTechniqueCard(entry));
+    }
+
+    /** One `applied_intensity_technique` actually scheduled this week,
+     * scanned straight from the already-loaded /week response (never
+     * asked of the separate reference catalog — see
+     * collectWeekAppliedTechniques in app.js). Presents the technique as
+     * a deliberate programming choice, not a universally "better"
+     * option (spec §4F). */
+    function buildTechniqueCard(entry) {
+      const card = createCard();
+      const row = el('div', { class: 'card-row' });
+      row.appendChild(el('div', { class: 'card-title', text: entry.technique.name }));
+      row.appendChild(el('div', { class: 'card-subtitle', text: `${formatWeekday(entry.weekday)} · ${entry.exercise_name}` }));
+      card.appendChild(row);
+      card.appendChild(el('p', { text: entry.technique.instruction, style: 'margin:0.4rem 0' }));
+      if (entry.technique.extra_fatigue_note) {
+        card.appendChild(el('p', { class: 'faint', text: entry.technique.extra_fatigue_note, style: 'margin:0' }));
+      }
+      card.appendChild(el('p', { class: 'faint', text: `Applied to working set ${entry.technique.applied_to_working_set_number}.`, style: 'margin:0.2rem 0 0' }));
+      return card;
+    }
+
+
+    // ---------- Insights data (GET /api/insights) ----------
+
+    const STATUS_LABEL = { new_best: 'New best', up: 'Improving', flat: 'Holding', down: 'Dropping', stalled: 'Stalled', new: 'New' };
+    const STATUS_BADGE = { new_best: 'badge-success', up: 'badge-success', flat: 'badge-neutral', down: 'badge-danger', stalled: 'badge-warning', new: 'badge-progress' };
+    let insightsData = null;
+    let showAllExercises = false;
+
+    async function loadInsights() {
+      const ids = ['strength-section', 'volume-section', 'consistency-section', 'athletic-section', 'checkins-section'];
+      for (const id of ids) showLoading(document.getElementById(id), 'Loading…');
+      try {
+        insightsData = await api('/api/insights');
+        renderDeloadHistory(insightsData.deloads);
+        renderStrength();
+        renderVolume(insightsData.volume);
+        renderConsistency(insightsData.consistency);
+        renderAthletic(insightsData.athletic);
+        renderCheckIns(insightsData.goalCheckIns);
+      } catch (err) {
+        for (const id of ids) showError(document.getElementById(id), 'We could not load insights.', loadInsights);
+      }
+    }
+
+    function renderDeloadHistory(deloads) {
+      const container = document.getElementById('deload-history');
+      container.innerHTML = '';
+      if (!deloads || deloads.length === 0) return;
+      const parts = deloads.map((d) => `${d.kind === 'reactive' ? 'Recovery' : 'Scheduled'} deload ${formatDate(d.start)} – ${formatDate(d.end)}${d.confirmedByCurrentRule === false ? ' (a false alarm: the current check finds no real drop)' : ''}`);
+      container.appendChild(el('p', { class: 'faint', text: `Deloads in the last 6 weeks: ${parts.join('; ')}.`, style: 'margin:0.5rem 0 0' }));
+    }
+
+    function sparkline(points) {
+      const ns = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(ns, 'svg');
+      svg.setAttribute('viewBox', '0 0 120 32');
+      svg.setAttribute('class', 'spark');
+      svg.setAttribute('aria-hidden', 'true');
+      if (points.length < 2) return svg;
+      const values = points.map((p) => p.value);
+      const min = Math.min(...values);
+      const span = Math.max(...values) - min || 1;
+      const xy = points.map((p, i) => [4 + (i * 112) / (points.length - 1), 28 - ((p.value - min) * 24) / span]);
+      const line = document.createElementNS(ns, 'polyline');
+      line.setAttribute('points', xy.filter((_, i) => !points[i].deload).map((c) => c.join(',')).join(' '));
+      svg.appendChild(line);
+      xy.forEach(([x, y], i) => {
+        const dot = document.createElementNS(ns, 'circle');
+        dot.setAttribute('cx', x);
+        dot.setAttribute('cy', y);
+        dot.setAttribute('r', 2.2);
+        if (points[i].deload) dot.setAttribute('class', 'deload');
+        svg.appendChild(dot);
+      });
+      return svg;
+    }
+
+    function renderStrength() {
+      const container = document.getElementById('strength-section');
+      container.innerHTML = '';
+      const all = insightsData.strength.filter((e) => e.sessions >= 2);
+      if (all.length === 0) {
+        showEmpty(container, 'Log the same exercise in at least two sessions to see its progress.');
+        return;
+      }
+      const shown = showAllExercises ? all : all.filter((e) => e.goal || e.sessions >= 4).slice(0, 12);
+      const list = el('div', { class: 'progress-list' });
+      for (const e of shown) {
+        const card = createCard();
+        const head = el('div', { class: 'progress-row' });
+        head.appendChild(el('div', { class: 'card-title', text: [e.name, e.equipment, e.attachment, e.countUnit && e.countUnit !== 'reps' ? `in ${e.countUnit}` : null].filter(Boolean).join(' · ') }));
+        const badges = el('div', { style: 'display:flex;gap:0.35rem' });
+        if (e.goal) badges.appendChild(el('span', { class: 'badge badge-activity', text: 'Goal' }));
+        badges.appendChild(el('span', { class: `badge ${STATUS_BADGE[e.status]}`, text: STATUS_LABEL[e.status] }));
+        head.appendChild(badges);
+        card.appendChild(head);
+        const body = el('div', { class: 'progress-row', style: 'margin-top:0.3rem' });
+        const lastPoint = e.points[e.points.length - 1];
+        const change = e.changePct === null ? '' : ` (${e.changePct > 0 ? '+' : ''}${e.changePct}%)`;
+        body.appendChild(el('div', { class: 'muted progress-numbers', text: `${e.first} → ${e.last} ${e.unit}${change} · last ${lastPoint.bestSet} on ${formatDate(lastPoint.date)} · ${e.sessions} sessions` }));
+        body.appendChild(sparkline(e.points));
+        card.appendChild(body);
+        list.appendChild(card);
+      }
+      container.appendChild(list);
+      if (all.length > shown.length || showAllExercises) {
+        container.appendChild(el('div', { class: 'btn-row', style: 'margin-top:0.6rem' }, [createButton({
+          label: showAllExercises ? 'Show fewer' : `Show all ${all.length} exercises`,
+          variant: 'secondary',
+          onClick: () => { showAllExercises = !showAllExercises; renderStrength(); },
+        })]));
+      }
+    }
+
+    function volumeCell(w) {
+      if (w.required === null || w.required === 0) return el('td', { class: w.done > 0 ? '' : 'vol-none', text: w.done > 0 ? `${w.done}` : '–' });
+      const pct = w.done / w.required;
+      return el('td', { class: pct >= 0.9 ? 'vol-good' : pct >= 0.5 ? 'vol-mid' : 'vol-low', text: `${w.done}/${w.required}` });
+    }
+
+    function renderVolume(rows) {
+      const container = document.getElementById('volume-section');
+      container.innerHTML = '';
+      if (!rows || rows.length === 0) {
+        showEmpty(container, 'No volume data yet.');
+        return;
+      }
+      const weeks = rows[0].weeks.map((w) => w.weekStart);
+      const table = el('table', { class: 'volume-table' });
+      const head = el('tr', {}, [el('th', { text: 'Muscle' }), ...weeks.map((w, i) => el('th', { text: i === weeks.length - 1 ? 'This week' : formatDate(w) }))]);
+      table.appendChild(el('thead', {}, [head]));
+      const tbody = el('tbody');
+      let group = null;
+      for (const r of rows) {
+        const label = r.goalLabel || 'Other';
+        if (label !== group) {
+          group = label;
+          tbody.appendChild(el('tr', { class: 'group-row' }, [el('td', { text: label, colspan: String(weeks.length + 1) })]));
+        }
+        tbody.appendChild(el('tr', {}, [el('td', { text: r.name }), ...r.weeks.map(volumeCell)]));
+      }
+      table.appendChild(tbody);
+      container.appendChild(el('div', { class: 'table-scroll' }, [table]));
+    }
+
+    function renderConsistency(weeks) {
+      const container = document.getElementById('consistency-section');
+      container.innerHTML = '';
+      if (!weeks || weeks.length === 0) {
+        showEmpty(container, 'No training logged yet.');
+        return;
+      }
+      const grid = el('div', { class: 'summary-grid' });
+      weeks.forEach((w, i) => {
+        const card = createCard();
+        card.appendChild(el('div', { class: 'card-title', text: i === weeks.length - 1 ? 'This week' : `Week of ${formatDate(w.weekStart)}` }));
+        card.appendChild(el('div', { class: 'card-subtitle', text: `Gym days: ${w.gymDaysDone} of ${w.gymDaysScheduled}` }));
+        if (w.setsPrescribed > 0) {
+          const pct = Math.round((w.setsDone / w.setsPrescribed) * 100);
+          card.appendChild(el('div', { class: 'faint', text: `Sets: ${w.setsDone} of ${w.setsPrescribed} prescribed (${pct}%)` }));
+        }
+        grid.appendChild(card);
+      });
+      container.appendChild(grid);
+    }
+
+    function renderAthletic(athletic) {
+      const container = document.getElementById('athletic-section');
+      container.innerHTML = '';
+      if (!athletic || athletic.drills.length === 0) {
+        showEmpty(container, 'No drills logged yet. Athletic days appear here once you log them.');
+        return;
+      }
+      const weeks = athletic.weeks.map((w, i) => `${i === athletic.weeks.length - 1 ? 'This week' : formatDate(w.weekStart)}: ${w.sessions}`).join(' · ');
+      container.appendChild(el('p', { class: 'muted', style: 'margin:0 0 0.4rem', text: `Days with drills, by week: ${weeks}` }));
+      for (const d of athletic.drills) {
+        const card = createCard();
+        const row = el('div', { class: 'progress-row' });
+        row.appendChild(el('div', { class: 'card-title', text: d.name }));
+        row.appendChild(el('span', { class: 'badge badge-neutral', text: `${d.sessions} session${d.sessions === 1 ? '' : 's'}` }));
+        card.appendChild(row);
+        card.appendChild(el('p', { class: 'muted', style: 'margin:0.3rem 0 0', text: `Last ${formatDate(d.lastDate)}: ${d.last}. Best set: ${d.best}.` }));
+        container.appendChild(card);
+      }
+    }
+
+    function renderCheckIns(goals) {
+      const container = document.getElementById('checkins-section');
+      container.innerHTML = '';
+      if (!goals || goals.length === 0) {
+        showEmpty(container, 'No active goals.', el('a', { class: 'btn', href: 'index.html', text: 'Add a goal' }));
+        return;
+      }
+      for (const g of goals) {
+        const card = createCard();
+        const row = el('div', { class: 'progress-row' });
+        row.appendChild(el('div', { class: 'card-title', text: g.name }));
+        row.appendChild(el('span', { class: `badge ${g.overdue ? 'badge-warning' : 'badge-success'}`, text: g.overdue ? 'Check-in due' : `Next ${formatDate(g.nextDue)}` }));
+        card.appendChild(row);
+        card.appendChild(el('p', { class: 'muted', style: 'margin:0.3rem 0 0', text: g.lastAssessment
+          ? `Last check-in ${formatDate(g.lastAssessment.date)}: rated ${g.lastAssessment.rating}/5.`
+          : 'No check-in yet. Rate how this area looks on the Goals page; goal progress and volume decisions use it.' }));
+        card.appendChild(el('a', { href: 'index.html', text: 'Go to Goals', style: 'display:inline-block;margin-top:0.3rem' }));
+        container.appendChild(card);
+      }
+    }
+
+    loadState();
+    loadInsights();
+    loadAdvisories();
+    loadTechniques();
+  </script>
+</body>
+</html>
