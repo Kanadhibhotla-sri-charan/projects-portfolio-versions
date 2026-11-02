@@ -52,10 +52,10 @@ a.app:hover { transform: translateY(-3px); border-color: var(--accent); box-shad
 @media (prefers-reduced-motion: reduce) { .app { transition: none; } a.app:hover { transform: none; } }
 .shot { aspect-ratio: 16 / 11; overflow: hidden; border-bottom: 1px solid var(--line); background: var(--bg); max-width: 100%; }
 .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block; }
-.body { padding: 20px 22px 22px; display: grid; gap: 10px; align-content: start; }
+.body { padding: 20px 22px 22px; display: flex; flex-direction: column; gap: 10px; }
 .app h2 { font-size: 1.35rem; font-weight: 700; }
 .app p { color: var(--soft); }
-.foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line); }
+.foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); }
 .stack { font-family: var(--mono); font-size: 0.74rem; color: var(--soft); }
 .go { font-weight: 600; color: var(--accent); white-space: nowrap; }
 
